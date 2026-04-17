@@ -15,7 +15,7 @@ logger = logging.getLogger("tee-judge")
 
 SECRET_KEY = os.environ.get("TEE_JUDGE_SECRET", "")
 if not SECRET_KEY:
-    if os.environ.get("TEE_JUDGE_ENV", "dev") != "dev":
+    if os.environ.get("TEE_JUDGE_ENV", "production") != "dev":
         print("FATAL: TEE_JUDGE_SECRET must be set in production", file=sys.stderr)
         sys.exit(1)
     SECRET_KEY = "dev-only-insecure-key"
@@ -29,7 +29,7 @@ TOKEN_EXPIRY = int(os.environ.get("TEE_JUDGE_TOKEN_EXPIRY", "86400"))  # 24h def
 
 JUDGE_KEY = os.environ.get("TEE_JUDGE_JUDGE_KEY", "")
 if not JUDGE_KEY:
-    if os.environ.get("TEE_JUDGE_ENV", "dev") != "dev":
+    if os.environ.get("TEE_JUDGE_ENV", "production") != "dev":
         print("FATAL: TEE_JUDGE_JUDGE_KEY must be set in production", file=sys.stderr)
         sys.exit(1)
     JUDGE_KEY = "dev-only-judge-key"

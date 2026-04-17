@@ -25,7 +25,7 @@ EXPECTED_MRENCLAVE = os.environ.get("TEE_JUDGE_MRENCLAVE", "")
 # Enclave signing key for verdict signature verification
 ENCLAVE_KEY = os.environ.get("TEE_JUDGE_ENCLAVE_KEY", "")
 if not ENCLAVE_KEY:
-    if os.environ.get("TEE_JUDGE_ENV", "dev") != "dev":
+    if os.environ.get("TEE_JUDGE_ENV", "production") != "dev":
         import sys
 
         print("FATAL: TEE_JUDGE_ENCLAVE_KEY must be set in production", file=sys.stderr)
@@ -37,7 +37,7 @@ if not ENCLAVE_KEY:
 ALLOW_MOCK = os.environ.get("TEE_JUDGE_ALLOW_MOCK", "0") == "1"
 
 
-def _verify_attestation(req: JudgeResultRequest) -> tuple[bool, str]:
+def _verify_attestation(req: JudgeResultRequest, problem_id: int) -> tuple[bool, str]:
     """Verify attestation quote and verdict signature. Returns (verified, reason)."""
     if not req.attestation_quote:
         return False, "No attestation quote provided"
@@ -67,8 +67,7 @@ def _verify_attestation(req: JudgeResultRequest) -> tuple[bool, str]:
                 )
 
         # Verify quote has required fields
-        required = ["mrenclave", "mrsigner", "nonce", "quote_size"]
-        for field in required:
+        for field in ["mrenclave", "mrsigner", "nonce", "quote_size"]:
             if field not in quote_data:
                 return False, f"Missing field in attestation quote: {field}"
 
@@ -82,17 +81,7 @@ def _verify_attestation(req: JudgeResultRequest) -> tuple[bool, str]:
     if not req.verdict_signature:
         return False, "No verdict signature provided"
 
-    sign_payload = f"{req.submission_id}:{req.nonce}"
-    # Reconstruct expected payload: submission_id:problem_id:verdict:test_passed:test_total:nonce
-    # We need problem_id from DB
-    with db_conn() as conn:
-        sub = conn.execute(
-            "SELECT problem_id FROM submissions WHERE id = ?", (req.submission_id,)
-        ).fetchone()
-        if not sub:
-            return False, "Submission not found for signature verification"
-
-    sign_payload = f"{req.submission_id}:{sub['problem_id']}:{req.verdict}:{req.test_passed}:{req.test_total}:{req.nonce}"
+    sign_payload = f"{req.submission_id}:{problem_id}:{req.verdict}:{req.test_passed}:{req.test_total}:{req.nonce}"
     expected_sig = hmac.new(
         ENCLAVE_KEY.encode(), sign_payload.encode(), hashlib.sha256
     ).hexdigest()
@@ -169,12 +158,13 @@ def poll_task(user: dict = Depends(require_judge_role)):
 async def report_result(
     req: JudgeResultRequest, user: dict = Depends(require_judge_role)
 ):
-    """Judge Client가 채점 결과를 서버로 보고. Judge 역할 + attestation 검증 필요."""
+    """Judge Client가 채점 결과를 서버로 보고. Single transaction."""
     user_id = user["user_id"]
 
     with db_conn() as conn:
+        # All checks + insert in one connection
         sub = conn.execute(
-            "SELECT id, status, nonce, user_id FROM submissions WHERE id = ?",
+            "SELECT id, status, nonce, user_id, problem_id FROM submissions WHERE id = ?",
             (req.submission_id,),
         ).fetchone()
         if not sub:
@@ -185,12 +175,12 @@ async def report_result(
                 403, "Cannot report result for another user's submission"
             )
 
-        if sub["status"] not in ("JUDGING",):
+        if sub["status"] != "JUDGING":
             raise HTTPException(
                 409, f"Submission not in JUDGING state: {sub['status']}"
             )
 
-        # Nonce MUST match (no bypass)
+        # Nonce MUST match
         if not sub["nonce"] or not req.nonce:
             raise HTTPException(403, "Nonce is required")
         if not hmac.compare_digest(sub["nonce"], req.nonce):
@@ -204,21 +194,20 @@ async def report_result(
         if existing:
             raise HTTPException(409, "Result already reported")
 
-    # Verify attestation and signature
-    attestation_verified, reason = _verify_attestation(req)
-    if not attestation_verified:
-        logger.warning(
-            f"Attestation failed for submission #{req.submission_id}: {reason}"
-        )
-        # In strict mode, reject. In dev mode, log warning but accept.
-        if os.environ.get("TEE_JUDGE_ENV", "dev") != "dev":
-            raise HTTPException(403, f"Attestation verification failed: {reason}")
-        else:
+        # Verify attestation and signature (using problem_id from same query)
+        attestation_verified, reason = _verify_attestation(req, sub["problem_id"])
+        if not attestation_verified:
             logger.warning(
-                f"Dev mode: accepting unverified attestation for #{req.submission_id}"
+                f"Attestation failed for submission #{req.submission_id}: {reason}"
             )
+            if os.environ.get("TEE_JUDGE_ENV", "production") != "dev":
+                raise HTTPException(403, f"Attestation verification failed: {reason}")
+            else:
+                logger.warning(
+                    f"Dev mode: accepting unverified attestation for #{req.submission_id}"
+                )
 
-    with db_conn() as conn:
+        # Insert result + update status atomically
         try:
             conn.execute(
                 """

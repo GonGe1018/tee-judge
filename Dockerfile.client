@@ -44,4 +44,10 @@ COPY deploy/gramine/ ./
 # Generate signing key and build manifest
 RUN gramine-sgx-gen-private-key -f 2>/dev/null || true
 
+# Create non-root user (needs sgx device access via group)
+RUN useradd -m -s /bin/bash judgeuser
+RUN chown -R judgeuser:judgeuser /app
+
+USER judgeuser
+
 ENTRYPOINT ["python3", "client/daemon.py"]

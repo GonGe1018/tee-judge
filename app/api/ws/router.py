@@ -1,8 +1,10 @@
 """WebSocket endpoints for Judge Client and Browser notifications."""
 
+import os
 import json
 import logging
 import asyncio
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
@@ -13,9 +15,33 @@ logger = logging.getLogger("tee-judge")
 
 router = APIRouter(tags=["websocket"])
 
+# Allowed origins for WebSocket (comma-separated, or * for dev)
+_ws_origins = os.environ.get("TEE_JUDGE_CORS_ORIGINS", "")
+ALLOWED_WS_ORIGINS: set[str] = set()
+if _ws_origins and _ws_origins != "*":
+    ALLOWED_WS_ORIGINS = {
+        o.strip().rstrip("/") for o in _ws_origins.split(",") if o.strip()
+    }
+
+
+def _check_origin(websocket: WebSocket) -> bool:
+    """Verify WebSocket Origin header against allowed origins."""
+    if not ALLOWED_WS_ORIGINS:
+        return True  # No restriction configured (dev mode)
+    origin = (websocket.headers.get("origin") or "").rstrip("/")
+    if not origin:
+        return True  # Non-browser clients (Judge Client CLI) don't send Origin
+    return origin in ALLOWED_WS_ORIGINS
+
 
 async def _auth_websocket(websocket: WebSocket) -> dict | None:
-    """Authenticate WebSocket via first message. Returns user dict or None."""
+    """Authenticate WebSocket via first message with Origin check."""
+    # Check Origin before accepting
+    if not _check_origin(websocket):
+        await websocket.close(code=4003)
+        logger.warning(f"WS rejected: invalid origin {websocket.headers.get('origin')}")
+        return None
+
     await websocket.accept()
     try:
         raw = await asyncio.wait_for(websocket.receive_text(), timeout=5.0)

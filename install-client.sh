@@ -1,6 +1,10 @@
 #!/bin/bash
 # TEE-Judge Client Installer for Ubuntu (Intel SGX)
-# Usage: curl -fsSL https://raw.githubusercontent.com/GonGe1018/tee-judge/main/install-client.sh | bash
+#
+# SECURITY NOTE: Review this script before running.
+# Download first: curl -fsSL https://raw.githubusercontent.com/GonGe1018/tee-judge/main/install-client.sh -o install.sh
+# Review: less install.sh
+# Run: bash install.sh
 set -e
 
 RED='\033[0;31m'

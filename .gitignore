@@ -110,3 +110,9 @@ scripts/test_ws.py
 scripts/start_ws_daemon.py
 scripts/check_routes.py
 scripts/deploy_ws.py
+
+scripts/security_test.py
+scripts/benchmark.py
+
+scripts/docker_deploy.py
+scripts/fix_manifest_env.py

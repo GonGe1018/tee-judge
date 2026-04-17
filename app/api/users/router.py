@@ -2,7 +2,7 @@
 
 import logging
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 
 from app.core.schemas import RegisterRequest, LoginRequest, TokenResponse
@@ -70,9 +70,7 @@ def login(req: LoginRequest):
 
 
 @router.post("/judge-token", response_model=JudgeTokenResponse)
-def get_judge_token(
-    req: JudgeTokenRequest, user: dict = __import__("fastapi").Depends(get_current_user)
-):
+def get_judge_token(req: JudgeTokenRequest, user: dict = Depends(get_current_user)):
     """Get a judge-role token. Requires valid user token + judge_key.
     This separates the judge role from normal users."""
     if not verify_judge_key(req.judge_key):

@@ -301,14 +301,14 @@ async function fetchAndRenderResult(submissionId) {
 }
 
 function renderResult(r) {
-    const verdictClass = `verdict-${r.verdict}`;
+    const verdictClass = `verdict-${esc(r.verdict)}`;
     const verdictText = {
         'AC': '맞았습니다!!',
         'WA': '틀렸습니다',
         'TLE': '시간 초과',
         'RE': '런타임 에러',
         'CE': '컴파일 에러',
-    }[r.verdict] || r.verdict;
+    }[r.verdict] || esc(r.verdict);
 
     const attestBadge = r.attestation_verified
         ? '<span class="attestation-badge attestation-verified">Attestation 검증됨</span>'
@@ -318,15 +318,15 @@ function renderResult(r) {
         <div class="verdict ${verdictClass}">${verdictText}</div>
         <div class="result-info">
             <table>
-                <tr><td>제출 번호</td><td>${r.submission_id}</td></tr>
-                <tr><td>문제</td><td>${r.problem_id}</td></tr>
-                <tr><td>결과</td><td>${r.verdict}</td></tr>
-                <tr><td>실행 시간</td><td>${r.time_ms !== null ? r.time_ms + 'ms' : '-'}</td></tr>
-                <tr><td>메모리</td><td>${r.memory_kb !== null ? r.memory_kb + 'KB' : '-'}</td></tr>
-                <tr><td>테스트</td><td>${r.test_passed !== null ? r.test_passed + '/' + r.test_total : '-'}</td></tr>
+                <tr><td>제출 번호</td><td>${esc(String(r.submission_id))}</td></tr>
+                <tr><td>문제</td><td>${esc(String(r.problem_id))}</td></tr>
+                <tr><td>결과</td><td>${esc(r.verdict)}</td></tr>
+                <tr><td>실행 시간</td><td>${r.time_ms !== null ? esc(String(r.time_ms)) + 'ms' : '-'}</td></tr>
+                <tr><td>메모리</td><td>${r.memory_kb !== null ? esc(String(r.memory_kb)) + 'KB' : '-'}</td></tr>
+                <tr><td>테스트</td><td>${r.test_passed !== null ? esc(String(r.test_passed)) + '/' + esc(String(r.test_total)) : '-'}</td></tr>
                 <tr><td>Attestation</td><td>${attestBadge}</td></tr>
-                <tr><td>Nonce</td><td><code>${r.nonce || '-'}</code></td></tr>
-                <tr><td>채점 시각</td><td>${r.judged_at || '-'}</td></tr>
+                <tr><td>Nonce</td><td><code>${esc(r.nonce || '-')}</code></td></tr>
+                <tr><td>채점 시각</td><td>${esc(r.judged_at || '-')}</td></tr>
             </table>
         </div>
     `;

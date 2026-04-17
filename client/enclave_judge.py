@@ -22,16 +22,21 @@ MAX_PROCESSES = 16
 # Signing key from environment (REQUIRED in production)
 _raw_key = os.environ.get("TEE_JUDGE_ENCLAVE_KEY", "")
 if not _raw_key:
-    if os.environ.get("TEE_JUDGE_ENV", "dev") != "dev":
+    if os.environ.get("TEE_JUDGE_ENV", "production") != "dev":
         print("FATAL: TEE_JUDGE_ENCLAVE_KEY must be set", file=sys.stderr)
         sys.exit(1)
     _raw_key = "dev-only-enclave-key"
 ENCLAVE_KEY = _raw_key.encode()
 
 
-def _get_sandbox_preexec():
+def _get_sandbox_preexec(for_compiler=False):
     """Return a preexec_fn that applies resource limits on Linux."""
     if platform.system() != "Linux":
+        import logging
+
+        logging.getLogger("tee-judge").warning(
+            "Non-Linux platform: sandbox disabled. User code runs without resource limits."
+        )
         return None
 
     def _sandbox():
@@ -39,12 +44,16 @@ def _get_sandbox_preexec():
 
         # Memory limit
         resource.setrlimit(resource.RLIMIT_AS, (MAX_MEMORY_BYTES, MAX_MEMORY_BYTES))
-        # CPU time limit (hard kill after time_limit + 5s, handled by subprocess timeout)
-        resource.setrlimit(resource.RLIMIT_CPU, (10, 15))
+        # CPU time limit
+        cpu_limit = (60, 90) if for_compiler else (10, 15)
+        resource.setrlimit(resource.RLIMIT_CPU, cpu_limit)
         # Max processes (prevent fork bomb)
         resource.setrlimit(resource.RLIMIT_NPROC, (MAX_PROCESSES, MAX_PROCESSES))
         # Max file size (prevent disk fill)
-        resource.setrlimit(resource.RLIMIT_FSIZE, (MAX_OUTPUT_BYTES, MAX_OUTPUT_BYTES))
+        fsize = (
+            10 * 1024 * 1024 if for_compiler else MAX_OUTPUT_BYTES
+        )  # 10MB for compiler
+        resource.setrlimit(resource.RLIMIT_FSIZE, (fsize, fsize))
         # No core dumps
         resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
 
@@ -66,9 +75,17 @@ def host_compile_and_run(task):
         if task["language"] == "cpp":
             cmd.insert(1, "-std=c++17")
 
-        # Compile (no sandbox needed for compiler)
+        # Compile (with sandbox)
+        compiler_sandbox = _get_sandbox_preexec(for_compiler=True)
         try:
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            r = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                preexec_fn=compiler_sandbox,
+                cwd=str(tmpdir),
+            )
             if r.returncode != 0:
                 return {"status": "CE", "outputs": []}
         except FileNotFoundError:

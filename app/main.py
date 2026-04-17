@@ -20,7 +20,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("tee-judge")
 
-_env = os.environ.get("TEE_JUDGE_ENV", "dev")
+_env = os.environ.get("TEE_JUDGE_ENV", "production")
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
@@ -32,20 +32,22 @@ app = FastAPI(
 # WebSocket routes (must be before CORS middleware and static mount)
 app.include_router(ws_router)
 
-# CORS (does not apply to WebSocket)
-CORS_ORIGINS = os.environ.get("TEE_JUDGE_CORS_ORIGINS", "*").split(",")
-if "*" in CORS_ORIGINS:
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=False,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+# CORS
+_cors_raw = os.environ.get("TEE_JUDGE_CORS_ORIGINS", "")
+if not _cors_raw or _cors_raw == "*":
+    if _env == "dev":
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=["*"],
+            allow_credentials=False,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+    # Production without CORS_ORIGINS: no CORS middleware (same-origin only)
 else:
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=CORS_ORIGINS,
+        allow_origins=[o.strip() for o in _cors_raw.split(",")],
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -56,7 +58,7 @@ else:
 def startup():
     init_db()
     logger.info(f"{settings.PROJECT_NAME} v{settings.VERSION} started")
-    env = os.environ.get("TEE_JUDGE_ENV", "dev")
+    env = os.environ.get("TEE_JUDGE_ENV", "production")
     logger.info(f"Environment: {env}")
 
 
