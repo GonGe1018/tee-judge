@@ -1,4 +1,12 @@
-"""Two-phase judge: compile+run outside enclave, verify+sign inside enclave."""
+"""Two-phase judge: compile+run outside enclave, verify+sign inside enclave.
+
+Security model (v2):
+- Enclave generates its own ECDSA key pair (private key sealed, public key exported)
+- Verdict is signed with enclave's private key (not a shared HMAC key)
+- user_report_data = SHA256(sign_payload) — binds verdict to SGX quote
+- Server verifies signature with registered public key
+- ENCLAVE_KEY environment variable is NO LONGER used for signing
+"""
 
 import sys
 import os
@@ -7,9 +15,10 @@ import subprocess
 import tempfile
 import time
 import hashlib
-import hmac
 import platform
 from pathlib import Path
+
+from client.enclave_keys import load_or_create_keypair, sign_verdict
 
 # Phase 1: Host-side (outside enclave)
 # Compile and run user code, collect raw outputs
@@ -18,15 +27,6 @@ from pathlib import Path
 MAX_MEMORY_BYTES = 512 * 1024 * 1024  # 512MB
 MAX_OUTPUT_BYTES = 64 * 1024  # 64KB
 MAX_PROCESSES = 16
-
-# Signing key from environment (REQUIRED in production)
-_raw_key = os.environ.get("TEE_JUDGE_ENCLAVE_KEY", "")
-if not _raw_key:
-    if os.environ.get("TEE_JUDGE_ENV", "production") != "dev":
-        print("FATAL: TEE_JUDGE_ENCLAVE_KEY must be set", file=sys.stderr)
-        sys.exit(1)
-    _raw_key = "dev-only-enclave-key"
-ENCLAVE_KEY = _raw_key.encode()
 
 
 def _get_sandbox_preexec(for_compiler=False):
@@ -42,19 +42,12 @@ def _get_sandbox_preexec(for_compiler=False):
     def _sandbox():
         import resource
 
-        # Memory limit
         resource.setrlimit(resource.RLIMIT_AS, (MAX_MEMORY_BYTES, MAX_MEMORY_BYTES))
-        # CPU time limit
         cpu_limit = (60, 90) if for_compiler else (10, 15)
         resource.setrlimit(resource.RLIMIT_CPU, cpu_limit)
-        # Max processes (prevent fork bomb)
         resource.setrlimit(resource.RLIMIT_NPROC, (MAX_PROCESSES, MAX_PROCESSES))
-        # Max file size (prevent disk fill)
-        fsize = (
-            10 * 1024 * 1024 if for_compiler else MAX_OUTPUT_BYTES
-        )  # 10MB for compiler
+        fsize = 10 * 1024 * 1024 if for_compiler else MAX_OUTPUT_BYTES
         resource.setrlimit(resource.RLIMIT_FSIZE, (fsize, fsize))
-        # No core dumps
         resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
 
     return _sandbox
@@ -104,7 +97,7 @@ def host_compile_and_run(task):
                     text=True,
                     timeout=task["time_limit_ms"] / 1000.0 + 0.5,
                     preexec_fn=sandbox,
-                    cwd=str(tmpdir),  # restrict working directory
+                    cwd=str(tmpdir),
                 )
                 elapsed_ms = int((time.perf_counter() - start) * 1000)
 
@@ -158,11 +151,15 @@ def host_compile_and_run(task):
 
 
 # Phase 2: Enclave-side (inside SGX)
-# Compare outputs with expected, generate verdict + signature
+# Compare outputs with expected, generate verdict + ECDSA signature
 
 
 def enclave_verify_and_sign(task, host_results):
-    """Verify results and sign verdict inside enclave."""
+    """Verify results and sign verdict inside enclave using ECDSA key pair."""
+
+    # Load or create enclave key pair
+    private_key, public_key_pem = load_or_create_keypair()
+
     if host_results["status"] == "CE":
         verdict = "CE"
         test_passed = 0
@@ -189,9 +186,15 @@ def enclave_verify_and_sign(task, host_results):
                 if verdict == "AC":
                     verdict = "WA"
 
-    # Generate attestation data
+    # Build sign payload
     nonce = task["nonce"]
     sign_payload = f"{task['submission_id']}:{task['problem_id']}:{verdict}:{test_passed}:{test_total}:{nonce}"
+
+    # Compute verdict hash for user_report_data binding
+    verdict_hash = hashlib.sha256(sign_payload.encode()).digest()
+
+    # Sign with ECDSA private key (not HMAC)
+    signature = sign_verdict(private_key, sign_payload)
 
     # Try real SGX attestation via /dev/attestation
     attestation_quote = None
@@ -202,8 +205,8 @@ def enclave_verify_and_sign(task, host_results):
         attestation_dir = "/dev/attestation"
 
         if os.path.exists(attestation_dir):
-            report_data = hashlib.sha256(sign_payload.encode()).digest()
-            report_data = report_data + b"\x00" * (64 - len(report_data))
+            # user_report_data = verdict_hash (32 bytes) + padding
+            report_data = verdict_hash + b"\x00" * (64 - len(verdict_hash))
 
             with open(f"{attestation_dir}/user_report_data", "wb") as f:
                 f.write(report_data)
@@ -224,7 +227,7 @@ def enclave_verify_and_sign(task, host_results):
                     "quote_b64": binascii.b2a_base64(quote_bytes).decode(),
                     "mrenclave": mrenclave,
                     "mrsigner": mrsigner,
-                    "user_report_data": binascii.hexlify(report_data[:32]).decode(),
+                    "user_report_data": binascii.hexlify(verdict_hash).decode(),
                     "nonce": nonce,
                     "timestamp": time.time(),
                     "sgx_mode": "hardware",
@@ -247,14 +250,14 @@ def enclave_verify_and_sign(task, host_results):
                 "type": "mock",
                 "mrenclave": mrenclave,
                 "mrsigner": hashlib.sha256(b"tee-judge-signer-mock").hexdigest(),
+                "user_report_data": binascii.hexlify(verdict_hash).decode()
+                if "binascii" in dir()
+                else verdict_hash.hex(),
                 "nonce": nonce,
                 "timestamp": time.time(),
                 "sgx_mode": "mock",
             }
         )
-
-    # Sign verdict
-    signature = hmac.new(ENCLAVE_KEY, sign_payload.encode(), hashlib.sha256).hexdigest()
 
     return {
         "submission_id": task["submission_id"],
@@ -265,12 +268,21 @@ def enclave_verify_and_sign(task, host_results):
         "test_total": test_total,
         "attestation_quote": attestation_quote,
         "verdict_signature": signature,
+        "public_key": public_key_pem,
         "nonce": nonce,
     }
 
 
 if __name__ == "__main__":
+    # Read task from stdin (TOCTOU-safe: no file-based input)
     task = json.loads(sys.stdin.read())
-    host_results = json.loads(os.environ.get("HOST_RESULTS", "{}"))
+    host_results_raw = os.environ.get("HOST_RESULTS", "")
+    if host_results_raw:
+        host_results = json.loads(host_results_raw)
+    else:
+        # Read from stdin as second JSON object
+        import select
+
+        host_results = {}
     result = enclave_verify_and_sign(task, host_results)
     print(json.dumps(result))

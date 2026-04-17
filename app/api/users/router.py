@@ -84,3 +84,31 @@ def get_judge_token(req: JudgeTokenRequest, user: dict = Depends(get_current_use
         username=user["username"],
         role="judge",
     )
+
+
+class RegisterKeyRequest(BaseModel):
+    public_key: str
+
+
+@router.post("/register-enclave-key")
+def register_enclave_key(
+    req: RegisterKeyRequest, user: dict = Depends(get_current_user)
+):
+    """Register enclave's ECDSA public key for verdict signature verification."""
+    # Validate it's a real PEM public key
+    try:
+        from cryptography.hazmat.primitives.serialization import load_pem_public_key
+
+        load_pem_public_key(req.public_key.encode())
+    except Exception:
+        raise HTTPException(400, "Invalid PEM public key")
+
+    with db_conn() as conn:
+        conn.execute(
+            "UPDATE users SET enclave_public_key = ? WHERE id = ?",
+            (req.public_key, user["user_id"]),
+        )
+        conn.commit()
+
+    logger.info(f"Enclave public key registered for user #{user['user_id']}")
+    return {"status": "ok"}

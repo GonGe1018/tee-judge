@@ -145,6 +145,7 @@ class JudgeResultRequest(BaseModel):
     test_total: int
     attestation_quote: Optional[str] = None
     verdict_signature: Optional[str] = None
+    public_key: Optional[str] = None  # Enclave ECDSA public key (PEM)
     nonce: str
 
     @field_validator("verdict")

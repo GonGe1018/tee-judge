@@ -1,7 +1,10 @@
-"""2-phase SGX Judge Client daemon - WebSocket notifications + HTTP data fetch.
+"""2-phase SGX Judge Client daemon — ECDSA keys + stdin/stdout (TOCTOU-safe).
 
-Connects to server via WebSocket for instant task notifications.
-Falls back to HTTP polling if WebSocket is unavailable.
+Security model (v2):
+- Enclave generates ECDSA key pair, private key sealed
+- Public key registered with server on startup
+- Data passed to enclave via stdin (not files) to prevent TOCTOU
+- Verdict signed with ECDSA, verified by server with registered public key
 """
 
 import sys
@@ -12,12 +15,12 @@ import tempfile
 import time
 import logging
 import getpass
-import threading
 
 PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_DIR)
 
-from client.enclave_judge import host_compile_and_run, enclave_verify_and_sign
+from client.enclave_judge import host_compile_and_run
+from client.enclave_keys import load_or_create_keypair
 import requests
 
 logging.basicConfig(
@@ -110,54 +113,80 @@ def authenticate(server: str) -> str:
     return token
 
 
-# --- SGX Judging ---
+def register_public_key(server: str, headers: dict, public_key_pem: str):
+    """Register enclave's ECDSA public key with server."""
+    try:
+        r = requests.post(
+            f"{server}/api/auth/register-enclave-key",
+            json={"public_key": public_key_pem},
+            headers=headers,
+            timeout=10,
+        )
+        if r.status_code == 200:
+            log.info("Enclave public key registered with server")
+        else:
+            log.warning(
+                f"Failed to register public key: {r.status_code} {r.text[:200]}"
+            )
+    except Exception as e:
+        log.warning(f"Failed to register public key: {e}")
+
+
+# --- SGX Judging (stdin/stdout — TOCTOU-safe) ---
 
 
 def judge_in_sgx(task, hr):
-    """Run enclave verification inside SGX using unique temp files."""
-    with tempfile.TemporaryDirectory(prefix="tee-enclave-") as tmpdir:
-        task_path = os.path.join(tmpdir, "task.json")
-        hr_path = os.path.join(tmpdir, "hr.json")
-        result_path = os.path.join(tmpdir, "result.json")
+    """Run enclave verification inside SGX. Data passed via stdin, result via stdout."""
+    # Combine task + hr into single JSON for stdin
+    input_data = json.dumps({"task": task, "host_results": hr})
 
-        with open(task_path, "w") as f:
-            json.dump(task, f)
-        with open(hr_path, "w") as f:
-            json.dump(hr, f)
+    # Enclave script reads from stdin, writes result to stdout
+    enc_script = (
+        "import sys,os,json\n"
+        f"sys.path.insert(0,{PROJECT_DIR!r})\n"
+        f"os.chdir({PROJECT_DIR!r})\n"
+        "from client.enclave_judge import enclave_verify_and_sign\n"
+        "data=json.loads(sys.stdin.read())\n"
+        "r=enclave_verify_and_sign(data['task'],data['host_results'])\n"
+        "print('ENCLAVE_RESULT:'+json.dumps(r))\n"
+    )
 
-        enc_script = (
-            "import sys,os,json\n"
-            f"sys.path.insert(0,{PROJECT_DIR!r})\n"
-            f"os.chdir({PROJECT_DIR!r})\n"
-            "from client.enclave_judge import enclave_verify_and_sign\n"
-            f"task=json.load(open({task_path!r}))\n"
-            f"hr=json.load(open({hr_path!r}))\n"
-            "r=enclave_verify_and_sign(task,hr)\n"
-            f"json.dump(r,open({result_path!r},'w'))\n"
-        )
-        script_path = os.path.join(tmpdir, "enc_run.py")
-        with open(script_path, "w") as f:
-            f.write(enc_script)
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".py", prefix="tee-enc-", delete=False, dir="/tmp"
+    ) as f:
+        f.write(enc_script)
+        script_path = f.name
 
+    try:
         proc = subprocess.run(
             ["gramine-sgx", "python3", script_path],
+            input=input_data,
             capture_output=True,
             text=True,
             timeout=120,
             cwd=PROJECT_DIR,
-            env={**os.environ},  # pass all env vars including TEE_JUDGE_ENCLAVE_KEY
+            env={**os.environ},
         )
 
-        if os.path.exists(result_path):
-            with open(result_path) as f:
-                return json.load(f)
+        # Parse result from stdout
+        for line in proc.stdout.split("\n"):
+            if line.startswith("ENCLAVE_RESULT:"):
+                return json.loads(line[len("ENCLAVE_RESULT:") :])
 
-        log.error(f"Enclave returned no result. stderr: {proc.stderr[-300:]}")
+        log.error(f"Enclave returned no result. stdout: {proc.stdout[-300:]}")
+        log.error(f"stderr: {proc.stderr[-300:]}")
         return None
+    finally:
+        try:
+            os.unlink(script_path)
+        except Exception:
+            pass
 
 
 def judge_native(task, hr):
     """Run verification natively (no SGX)."""
+    from client.enclave_judge import enclave_verify_and_sign
+
     return enclave_verify_and_sign(task, hr)
 
 
@@ -180,14 +209,14 @@ def process_task(headers: dict):
     tc_count = len(task["testcases"])
     log.info(f"Task: submission #{sid}, {tc_count} testcases")
 
-    # Phase 1: Host compile + run
+    # Phase 1: Host compile + run (testcases has input only)
     hr = host_compile_and_run(task)
     if hr["status"] == "CE":
         log.info("  Phase 1: CE")
     else:
         log.info(f"  Phase 1: {len(hr['outputs'])} tests executed")
 
-    # Phase 2: Enclave verify + sign
+    # Phase 2: Enclave verify + sign (enclave_testcases has expected)
     enclave_task = {**task, "testcases": task["enclave_testcases"]}
     del enclave_task["enclave_testcases"]
 
@@ -220,7 +249,7 @@ def run_websocket(token: str, headers: dict):
     try:
         import websocket
     except ImportError:
-        log.warning("websocket-client not installed. pip install websocket-client")
+        log.warning("websocket-client not installed")
         return False
 
     ws_url = (
@@ -231,11 +260,8 @@ def run_websocket(token: str, headers: dict):
     ws = None
     try:
         ws = websocket.create_connection(ws_url, timeout=10)
-
-        # Send auth
         ws.send(json.dumps({"token": f"Bearer {token}"}))
 
-        # Wait for welcome
         welcome = json.loads(ws.recv())
         if welcome.get("type") != "connected":
             log.error(f"WS auth failed: {welcome}")
@@ -243,8 +269,7 @@ def run_websocket(token: str, headers: dict):
 
         log.info(f"WebSocket connected (user #{welcome.get('user_id')})")
 
-        # Main loop: wait for notifications
-        ws.settimeout(35)  # slightly longer than server ping interval
+        ws.settimeout(35)
         while True:
             try:
                 raw = ws.recv()
@@ -272,16 +297,15 @@ def run_websocket(token: str, headers: dict):
                     continue
 
             except websocket.WebSocketTimeoutException:
-                # Send heartbeat
                 try:
                     ws.send(json.dumps({"type": "ping"}))
                 except Exception:
                     log.warning("WS heartbeat failed, reconnecting...")
-                    return True  # Signal to reconnect
+                    return True
 
     except Exception as e:
         log.warning(f"WebSocket error: {e}")
-        return True  # Signal to reconnect
+        return True
     finally:
         if ws:
             try:
@@ -320,6 +344,11 @@ def main():
     token = authenticate(SERVER)
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
+    # Load or create enclave key pair and register public key
+    private_key, public_key_pem = load_or_create_keypair()
+    log.info(f"Enclave key pair loaded (public key: {public_key_pem[:40]}...)")
+    register_public_key(SERVER, headers, public_key_pem)
+
     # Try WebSocket first, fall back to polling
     ws_available = True
     try:
@@ -338,7 +367,6 @@ def main():
                     time.sleep(reconnect_delay)
                     reconnect_delay = min(reconnect_delay * 2, 30)
                 else:
-                    # Auth error or clean exit
                     break
             except KeyboardInterrupt:
                 log.info("Stopped.")

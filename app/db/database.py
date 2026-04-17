@@ -31,6 +31,7 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT NOT NULL UNIQUE,
             password_hash TEXT NOT NULL,
+            enclave_public_key TEXT,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );
 
