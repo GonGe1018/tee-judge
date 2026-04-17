@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TEE-Judge</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <header>
+        <h1><a href="/">TEE-Judge</a></h1>
+        <div id="auth-status">
+            <span id="user-info" style="display:none;"></span>
+            <button id="logout-btn" style="display:none;" onclick="logout()">로그아웃</button>
+        </div>
+    </header>
+
+    <main id="app">
+        <!-- Auth View -->
+        <section id="auth-view" style="display:none;">
+            <div class="auth-box">
+                <h2 id="auth-title">로그인</h2>
+                <form id="auth-form">
+                    <input type="text" id="auth-username" placeholder="사용자명" required>
+                    <input type="password" id="auth-password" placeholder="비밀번호" required>
+                    <button type="submit" id="auth-submit-btn">로그인</button>
+                </form>
+                <p class="auth-toggle">
+                    <span id="auth-toggle-text">계정이 없으신가요?</span>
+                    <a href="#" id="auth-toggle-link" onclick="toggleAuthMode()">회원가입</a>
+                </p>
+                <p id="auth-error" class="error-text"></p>
+            </div>
+        </section>
+
+        <!-- Problem List (default view) -->
+        <section id="problem-list-view" style="display:none;">
+            <h2>문제 목록</h2>
+            <table id="problem-table">
+                <thead>
+                    <tr>
+                        <th>번호</th>
+                        <th>제목</th>
+                        <th>시간 제한</th>
+                        <th>메모리 제한</th>
+                    </tr>
+                </thead>
+                <tbody id="problem-tbody"></tbody>
+            </table>
+        </section>
+
+        <!-- Problem Detail + Submit -->
+        <section id="problem-view" style="display:none;">
+            <div id="problem-detail"></div>
+            <h3>코드 제출</h3>
+            <form id="submit-form">
+                <select id="language">
+                    <option value="c">C</option>
+                    <option value="cpp">C++</option>
+                </select>
+                <textarea id="code" rows="15" placeholder="코드를 입력하세요..."></textarea>
+                <button type="submit">제출</button>
+            </form>
+        </section>
+
+        <!-- Result View -->
+        <section id="result-view" style="display:none;">
+            <h2>채점 결과</h2>
+            <div id="result-detail"></div>
+            <button onclick="showProblemList()">문제 목록으로</button>
+        </section>
+    </main>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

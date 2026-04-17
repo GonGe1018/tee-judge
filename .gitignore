@@ -1,0 +1,112 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+.venv/
+venv/
+env/
+
+# Database
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Temp
+*.tmp
+*.log
+
+# Session files
+session-*.md
+
+# Compiled binaries
+*.exe
+*.o
+
+# Environment
+.env
+.env.*
+
+# Azure management scripts
+scripts/ssh_run.py
+scripts/scp.py
+scripts/upload_code.py
+scripts/upload_to_azure.py
+scripts/setup_azure.py
+scripts/setup_dcap.py
+scripts/setup_sgx_judge.py
+scripts/setup_sgx_py311.py
+scripts/build_python311.py
+scripts/start_server.py
+scripts/start_daemon.py
+scripts/test_port.py
+scripts/test_azure_server.py
+scripts/test_py311.py
+scripts/test_sgx_hello.py
+scripts/test_sgx_py311.py
+scripts/test_2phase.py
+scripts/test_submit.py
+scripts/test_attestation.py
+scripts/inspect_db.py
+scripts/fix_sgx.py
+scripts/fix_sgx_perms.py
+scripts/fix_and_test_sgx.py
+scripts/fix_manifest_pkgs.py
+scripts/fix_qcnl.py
+scripts/debug_dcap.py
+scripts/e2e_sgx.py
+scripts/e2e_2phase.py
+scripts/e2e_clean.py
+scripts/e2e_dcap.py
+scripts/e2e_final.py
+scripts/e2e_full.py
+scripts/e2e_v2.py
+scripts/collect_paper_data.py
+scripts/restart_azure.py
+scripts/quick_test.py
+
+# Handoff
+HANDOFF.md
+
+# Gramine build artifacts
+python3.manifest
+python3.manifest.sgx
+python3.manifest.template
+python3.sig
+
+# Reference repos
+arkia-backend/
+scripts/deploy_docker.py
+scripts/deploy_server.py
+scripts/fix_docker.py
+scripts/start_daemon_docker.py
+
+scripts/debug_submit.py
+scripts/redeploy.py
+scripts/start_authed_daemon.py
+
+scripts/clean_redeploy.py
+scripts/debug_ws.py
+scripts/debug_ws2.py
+scripts/test_ws.py
+
+scripts/start_ws_daemon.py
+scripts/check_routes.py
+scripts/deploy_ws.py

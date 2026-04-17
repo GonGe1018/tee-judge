@@ -1,0 +1,88 @@
+"""Users API router: register, login, judge token."""
+
+import logging
+
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
+
+from app.core.schemas import RegisterRequest, LoginRequest, TokenResponse
+from app.core.auth import (
+    hash_password,
+    verify_password,
+    create_token,
+    verify_judge_key,
+    get_current_user,
+)
+from app.db.database import db_conn
+
+logger = logging.getLogger("tee-judge")
+
+router = APIRouter(prefix="/api/auth", tags=["auth"])
+
+
+class JudgeTokenRequest(BaseModel):
+    judge_key: str
+
+
+class JudgeTokenResponse(BaseModel):
+    token: str
+    user_id: int
+    username: str
+    role: str
+
+
+@router.post("/register", response_model=TokenResponse)
+def register(req: RegisterRequest):
+    with db_conn() as conn:
+        existing = conn.execute(
+            "SELECT id FROM users WHERE username = ?", (req.username,)
+        ).fetchone()
+        if existing:
+            raise HTTPException(409, "Username already taken")
+
+        pw_hash = hash_password(req.password)
+        cursor = conn.execute(
+            "INSERT INTO users (username, password_hash) VALUES (?, ?)",
+            (req.username, pw_hash),
+        )
+        user_id = cursor.lastrowid
+        conn.commit()
+
+    token = create_token(user_id, req.username, role="user")
+    logger.info(f"User registered: {req.username} (#{user_id})")
+    return TokenResponse(token=token, user_id=user_id, username=req.username)
+
+
+@router.post("/login", response_model=TokenResponse)
+def login(req: LoginRequest):
+    with db_conn() as conn:
+        user = conn.execute(
+            "SELECT id, username, password_hash FROM users WHERE username = ?",
+            (req.username,),
+        ).fetchone()
+
+    if not user or not verify_password(req.password, user["password_hash"]):
+        raise HTTPException(401, "Invalid username or password")
+
+    token = create_token(user["id"], user["username"], role="user")
+    logger.info(f"User logged in: {req.username}")
+    return TokenResponse(token=token, user_id=user["id"], username=user["username"])
+
+
+@router.post("/judge-token", response_model=JudgeTokenResponse)
+def get_judge_token(
+    req: JudgeTokenRequest, user: dict = __import__("fastapi").Depends(get_current_user)
+):
+    """Get a judge-role token. Requires valid user token + judge_key.
+    This separates the judge role from normal users."""
+    if not verify_judge_key(req.judge_key):
+        raise HTTPException(403, "Invalid judge key")
+
+    token = create_token(user["user_id"], user["username"], role="judge")
+    logger.info(f"Judge token issued for: {user['username']}")
+    return JudgeTokenResponse(
+        token=token,
+        user_id=user["user_id"],
+        username=user["username"],
+        role="judge",
+    )

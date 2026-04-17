@@ -1,0 +1,47 @@
+# TEE-Judge Client (SGX Enclave)
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install base dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc g++ python3 python3-pip curl gnupg2 ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Intel SGX + DCAP
+RUN curl -fsSL https://download.01.org/intel-sgx/sgx_repo/ubuntu/intel-sgx-deb.key | apt-key add - \
+    && echo "deb [arch=amd64] https://download.01.org/intel-sgx/sgx_repo/ubuntu jammy main" > /etc/apt/sources.list.d/intel-sgx.list \
+    && apt-get update && apt-get install -y --no-install-recommends \
+    libsgx-dcap-ql libsgx-dcap-default-qpl libsgx-dcap-quote-verify \
+    libsgx-urts libsgx-enclave-common sgx-aesm-service \
+    libsgx-aesm-quote-ex-plugin libsgx-aesm-ecdsa-plugin \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Gramine
+RUN curl -fsSLo /usr/share/keyrings/gramine-keyring.gpg https://packages.gramineproject.io/gramine-keyring.gpg \
+    && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/gramine-keyring.gpg] https://packages.gramineproject.io/ jammy main" > /etc/apt/sources.list.d/gramine.list \
+    && apt-get update && apt-get install -y --no-install-recommends gramine \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Azure DCAP client
+RUN curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | apt-key add - \
+    && echo "deb [arch=amd64] https://packages.microsoft.com/ubuntu/22.04/prod jammy main" > /etc/apt/sources.list.d/msprod.list \
+    && apt-get update && ACCEPT_EULA=Y apt-get install -y --no-install-recommends az-dcap-client \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Install Python dependencies
+COPY client/requirements.txt .
+RUN pip3 install --no-cache-dir -r requirements.txt
+
+# Copy client code
+COPY client/ ./client/
+
+# Copy Gramine manifest template
+COPY deploy/gramine/ ./
+
+# Generate signing key and build manifest
+RUN gramine-sgx-gen-private-key -f 2>/dev/null || true
+
+ENTRYPOINT ["python3", "client/daemon.py"]
