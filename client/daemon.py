@@ -145,6 +145,7 @@ def judge_in_sgx(task, hr):
             text=True,
             timeout=120,
             cwd=PROJECT_DIR,
+            env={**os.environ},  # pass all env vars including TEE_JUDGE_ENCLAVE_KEY
         )
 
         if os.path.exists(result_path):
