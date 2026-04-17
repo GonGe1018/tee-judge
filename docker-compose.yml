@@ -2,7 +2,7 @@ services:
   server:
     build: .
     ports:
-      - "8000:8000"
+      - "80:8000"
     volumes:
       - judge-data:/app/data
     environment:
