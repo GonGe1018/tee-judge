@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TEE-Judge - 시작 가이드</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <header>
+        <h1><a href="/">TEE-Judge</a></h1>
+        <nav>
+            <a href="/" class="nav-link">문제</a>
+            <a href="/static/guide.html" class="nav-link nav-active">가이드</a>
+        </nav>
+    </header>
+
+    <main>
+        <div class="guide-container">
+            <h2>TEE-Judge 시작 가이드</h2>
+            <p class="guide-intro">TEE-Judge는 Intel SGX 기반 온라인 저지입니다. 채점이 여러분의 컴퓨터에서 실행되며, SGX Enclave가 결과의 무결성을 보장합니다.</p>
+
+            <div class="guide-section">
+                <h3>어떻게 동작하나요?</h3>
+                <div class="flow-diagram">
+                    <div class="flow-step">
+                        <div class="flow-num">1</div>
+                        <div class="flow-text">웹에서 코드 제출</div>
+                    </div>
+                    <div class="flow-arrow">&rarr;</div>
+                    <div class="flow-step">
+                        <div class="flow-num">2</div>
+                        <div class="flow-text">Judge Client가<br>자동으로 채점</div>
+                    </div>
+                    <div class="flow-arrow">&rarr;</div>
+                    <div class="flow-step">
+                        <div class="flow-num">3</div>
+                        <div class="flow-text">SGX Enclave에서<br>결과 검증 + 서명</div>
+                    </div>
+                    <div class="flow-arrow">&rarr;</div>
+                    <div class="flow-step">
+                        <div class="flow-num">4</div>
+                        <div class="flow-text">결과 확인</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="guide-section">
+                <h3>Step 1: 회원가입</h3>
+                <p><a href="/">메인 페이지</a>에서 회원가입하세요. 사용자명과 비밀번호만 있으면 됩니다.</p>
+                <p class="guide-note">비밀번호: 8자 이상, 숫자 + 문자 포함</p>
+            </div>
+
+            <div class="guide-section">
+                <h3>Step 2: Judge Client 설치</h3>
+                <p>채점은 여러분의 컴퓨터에서 실행됩니다. Judge Client를 설치해야 합니다.</p>
+
+                <h4>요구 사항</h4>
+                <ul>
+                    <li>Ubuntu 20.04+ (x86_64)</li>
+                    <li>GCC / G++ (C/C++ 컴파일러)</li>
+                    <li>Python 3.10+</li>
+                    <li>Intel SGX 지원 CPU (선택 — 없으면 mock 모드로 동작)</li>
+                </ul>
+
+                <h4>방법 1: 직접 설치</h4>
+                <div class="code-block">
+<pre># 1. 레포 클론
+git clone https://github.com/GonGe1018/tee-judge.git
+cd tee-judge
+
+# 2. 의존성 설치
+pip install -r client/requirements.txt
+
+# 3. GCC 설치 (없는 경우)
+sudo apt install gcc g++
+
+# 4. Judge Client 실행
+TEE_JUDGE_SERVER=http://서버주소:8000 python client/daemon.py</pre>
+                </div>
+
+                <h4>방법 2: Docker (권장)</h4>
+                <div class="code-block">
+<pre># 설치 스크립트 실행
+curl -fsSL https://raw.githubusercontent.com/GonGe1018/tee-judge/main/install-client.sh | bash
+
+# 실행
+TEE_JUDGE_SERVER=http://서버주소:8000 tee-judge</pre>
+                </div>
+
+                <p class="guide-note">SGX 하드웨어가 있으면 자동으로 SGX 모드로 동작합니다. 없으면 mock 모드로 채점됩니다.</p>
+            </div>
+
+            <div class="guide-section">
+                <h3>Step 3: Judge Client 인증</h3>
+                <p>Judge Client를 처음 실행하면 로그인을 요청합니다. 웹에서 가입한 계정으로 로그인하세요.</p>
+                <div class="code-block">
+<pre>=== TEE-Judge Authentication ===
+1. Login
+2. Register
+Choose (1/2): 1
+Username: 사용자명
+Password: ********</pre>
+                </div>
+                <p>로그인 후 토큰이 <code>~/.tee-judge-token</code>에 저장되어 다음부터 자동 로그인됩니다.</p>
+            </div>
+
+            <div class="guide-section">
+                <h3>Step 4: 코드 제출</h3>
+                <p>Judge Client가 실행 중인 상태에서 웹 사이트에서 문제를 선택하고 C/C++ 코드를 제출하세요.</p>
+                <p>Judge Client가 자동으로 채점하고 결과가 즉시 표시됩니다.</p>
+            </div>
+
+            <div class="guide-section">
+                <h3>채점 결과</h3>
+                <table class="guide-table">
+                    <tr><td class="verdict-AC">AC</td><td>맞았습니다 (Accepted)</td></tr>
+                    <tr><td class="verdict-WA">WA</td><td>틀렸습니다 (Wrong Answer)</td></tr>
+                    <tr><td class="verdict-TLE">TLE</td><td>시간 초과 (Time Limit Exceeded)</td></tr>
+                    <tr><td class="verdict-RE">RE</td><td>런타임 에러 (Runtime Error)</td></tr>
+                    <tr><td class="verdict-CE">CE</td><td>컴파일 에러 (Compilation Error)</td></tr>
+                </table>
+            </div>
+
+            <div class="guide-section">
+                <h3>Attestation이란?</h3>
+                <p>결과 옆에 <span class="attestation-badge attestation-verified">Attestation 검증됨</span>이 표시되면, 채점이 SGX Enclave 안에서 실행되었고 결과가 위변조되지 않았음을 의미합니다.</p>
+                <p>Intel SGX 하드웨어가 생성한 암호학적 증명(DCAP Quote)으로 검증됩니다.</p>
+            </div>
+
+            <div class="guide-section">
+                <h3>FAQ</h3>
+                <details>
+                    <summary>Judge Client 없이 제출만 할 수 있나요?</summary>
+                    <p>제출은 가능하지만, Judge Client가 실행 중이어야 채점이 됩니다. Judge Client가 없으면 "대기 중" 상태로 남습니다.</p>
+                </details>
+                <details>
+                    <summary>SGX가 없는 컴퓨터에서도 되나요?</summary>
+                    <p>네, mock 모드로 동작합니다. 채점은 정상적으로 되지만 Attestation이 "미검증"으로 표시됩니다.</p>
+                </details>
+                <details>
+                    <summary>지원하는 언어는?</summary>
+                    <p>현재 C와 C++만 지원합니다.</p>
+                </details>
+                <details>
+                    <summary>Windows에서도 되나요?</summary>
+                    <p>Judge Client는 Linux(Ubuntu)에서만 동작합니다. Windows에서는 WSL2를 사용하면 mock 모드로 실행 가능합니다.</p>
+                </details>
+            </div>
+        </div>
+    </main>
+</body>
+</html>

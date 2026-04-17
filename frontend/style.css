@@ -259,3 +259,165 @@ button:hover {
     margin-top: 0.5rem;
     font-size: 0.9rem;
 }
+
+/* Navigation */
+
+nav {
+    display: flex;
+    gap: 1rem;
+}
+
+.nav-link {
+    color: #aaa;
+    text-decoration: none;
+    font-size: 0.95rem;
+    padding: 0.3rem 0;
+}
+
+.nav-link:hover {
+    color: #fff;
+}
+
+.nav-active {
+    color: #fff;
+    border-bottom: 2px solid #fff;
+}
+
+/* Guide Page */
+
+.guide-container {
+    max-width: 800px;
+    margin: 0 auto;
+}
+
+.guide-intro {
+    color: #555;
+    font-size: 1.05rem;
+    margin-bottom: 2rem;
+}
+
+.guide-section {
+    background: #fff;
+    padding: 1.5rem;
+    border-radius: 8px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    margin-bottom: 1.5rem;
+}
+
+.guide-section h3 {
+    margin-bottom: 0.8rem;
+    color: #1a1a2e;
+}
+
+.guide-section h4 {
+    margin: 1rem 0 0.5rem;
+    color: #333;
+    font-size: 0.95rem;
+}
+
+.guide-section ul {
+    margin: 0.5rem 0 0.5rem 1.5rem;
+}
+
+.guide-section li {
+    margin-bottom: 0.3rem;
+}
+
+.guide-note {
+    color: #666;
+    font-size: 0.9rem;
+    font-style: italic;
+    margin-top: 0.5rem;
+}
+
+.code-block {
+    background: #1a1a2e;
+    color: #e0e0e0;
+    border-radius: 6px;
+    padding: 1rem;
+    overflow-x: auto;
+    margin: 0.5rem 0;
+}
+
+.code-block pre {
+    margin: 0;
+    font-family: 'Consolas', 'Monaco', monospace;
+    font-size: 0.85rem;
+    line-height: 1.5;
+    white-space: pre;
+}
+
+.guide-table {
+    width: 100%;
+    box-shadow: none;
+}
+
+.guide-table td:first-child {
+    width: 60px;
+    font-weight: bold;
+    text-align: center;
+    border-radius: 4px;
+    padding: 0.4rem;
+}
+
+.flow-diagram {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    margin: 1rem 0;
+}
+
+.flow-step {
+    background: #f0f0ff;
+    border: 2px solid #1a1a2e;
+    border-radius: 8px;
+    padding: 0.8rem 1rem;
+    text-align: center;
+    min-width: 120px;
+}
+
+.flow-num {
+    background: #1a1a2e;
+    color: #fff;
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.8rem;
+    font-weight: bold;
+    margin-bottom: 0.3rem;
+}
+
+.flow-text {
+    font-size: 0.85rem;
+    color: #333;
+}
+
+.flow-arrow {
+    font-size: 1.5rem;
+    color: #1a1a2e;
+}
+
+details {
+    margin-bottom: 0.5rem;
+}
+
+summary {
+    cursor: pointer;
+    font-weight: 600;
+    padding: 0.5rem 0;
+    color: #1a1a2e;
+}
+
+summary:hover {
+    color: #16213e;
+}
+
+details p {
+    padding: 0.3rem 0 0.5rem 1rem;
+    color: #555;
+}
