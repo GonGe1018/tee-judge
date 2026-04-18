@@ -93,16 +93,13 @@ class Settings(BaseSettings):
     }
 
     @classmethod
-    def settings_customise_sources(
-        cls,
-        settings_cls,
-        init_settings,
-        env_settings,
-        dotenv_settings,
-        secrets_settings,
-    ):
+    def settings_customise_sources(cls, settings_cls, **kwargs):
         # env vars > .env file (default pydantic-settings v2 behavior)
-        return init_settings, env_settings, dotenv_settings, secrets_settings
+        init = kwargs.get("init_settings")
+        env = kwargs.get("env_settings")
+        dotenv = kwargs.get("dotenv_settings")
+        secrets = kwargs.get("secrets_settings")
+        return tuple(s for s in [init, env, dotenv, secrets] if s is not None)
 
 
 settings = Settings()
