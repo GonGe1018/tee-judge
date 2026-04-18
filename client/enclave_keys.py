@@ -21,10 +21,10 @@ from cryptography.exceptions import InvalidSignature
 
 logger = logging.getLogger("tee-judge")
 
-# Sealed key storage path
+# Sealed key storage path (default to /tmp for Gramine allowed_files compatibility)
 SEALED_KEY_PATH = os.environ.get(
     "TEE_JUDGE_SEALED_KEY",
-    os.path.join(os.path.dirname(__file__), ".sealed_key.pem"),
+    "/tmp/.tee-judge-sealed-key.pem",
 )
 
 
