@@ -27,6 +27,7 @@ from typing import Optional
 
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.backends import default_backend
 from cryptography.exceptions import InvalidSignature
 
 logger = logging.getLogger("tee-judge")
@@ -107,7 +108,9 @@ def verify_verdict_signature(
 ) -> bool:
     """Verify ECDSA signature with registered public key. Used by server."""
     try:
-        public_key = serialization.load_pem_public_key(public_key_pem.encode())
+        public_key = serialization.load_pem_public_key(
+            public_key_pem.encode(), backend=default_backend()
+        )
         public_key.verify(
             bytes.fromhex(signature_hex),
             payload.encode(),

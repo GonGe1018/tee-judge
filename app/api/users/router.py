@@ -102,8 +102,9 @@ def register_enclave_key(
     # Validate PEM
     try:
         from cryptography.hazmat.primitives.serialization import load_pem_public_key
+        from cryptography.hazmat.backends import default_backend
 
-        load_pem_public_key(req.public_key.encode())
+        load_pem_public_key(req.public_key.encode(), backend=default_backend())
     except Exception:
         raise HTTPException(400, "Invalid PEM public key")
 

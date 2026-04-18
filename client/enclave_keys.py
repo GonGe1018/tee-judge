@@ -19,6 +19,7 @@ from pathlib import Path
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
+from cryptography.hazmat.backends import default_backend
 from cryptography.exceptions import InvalidSignature
 
 logger = logging.getLogger("tee-judge")
@@ -32,7 +33,7 @@ SEALED_KEY_PATH = os.environ.get(
 
 def _generate_keypair() -> ec.EllipticCurvePrivateKey:
     """Generate a new ECDSA P-256 key pair."""
-    return ec.generate_private_key(ec.SECP256R1())
+    return ec.generate_private_key(ec.SECP256R1(), default_backend())
 
 
 def _serialize_private_key(key: ec.EllipticCurvePrivateKey) -> bytes:
@@ -56,7 +57,9 @@ def _serialize_public_key(key: ec.EllipticCurvePrivateKey) -> str:
 
 
 def _load_private_key(data: bytes) -> ec.EllipticCurvePrivateKey:
-    return serialization.load_pem_private_key(data, password=None)
+    return serialization.load_pem_private_key(
+        data, password=None, backend=default_backend()
+    )
 
 
 def load_or_create_keypair() -> tuple[ec.EllipticCurvePrivateKey, str]:
@@ -113,7 +116,9 @@ def verify_verdict_signature(
 ) -> bool:
     """Verify ECDSA signature. Used by server."""
     try:
-        public_key = serialization.load_pem_public_key(public_key_pem.encode())
+        public_key = serialization.load_pem_public_key(
+            public_key_pem.encode(), backend=default_backend()
+        )
         public_key.verify(
             bytes.fromhex(signature_hex),
             payload.encode(),

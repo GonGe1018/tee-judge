@@ -182,8 +182,11 @@ def enclave_hash_and_sign(task, host_results):
     injected_pem = os.environ.get("_TEE_JUDGE_PRIVATE_KEY_PEM", "")
     if injected_pem:
         from cryptography.hazmat.primitives.serialization import load_pem_private_key
+        from cryptography.hazmat.backends import default_backend
 
-        private_key = load_pem_private_key(injected_pem.encode(), password=None)
+        private_key = load_pem_private_key(
+            injected_pem.encode(), password=None, backend=default_backend()
+        )
         from client.enclave_keys import _serialize_public_key
 
         public_key_pem = _serialize_public_key(private_key)
