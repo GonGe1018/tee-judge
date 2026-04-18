@@ -136,9 +136,21 @@ def register_public_key(server: str, headers: dict, public_key_pem: str):
 
 
 def judge_in_sgx(task, hr):
-    """Run enclave verification inside SGX. Data passed via stdin, result via stdout."""
-    # Combine task + hr into single JSON for stdin
-    input_data = json.dumps({"task": task, "host_results": hr})
+    """Run enclave verification inside SGX. Data + key passed via stdin."""
+    # Load private key PEM to pass to enclave
+    from client.enclave_keys import SEALED_KEY_PATH
+    from pathlib import Path
+
+    key_pem = Path(SEALED_KEY_PATH).read_text()
+
+    # Combine task + hr + key into single JSON for stdin
+    input_data = json.dumps(
+        {
+            "task": task,
+            "host_results": hr,
+            "private_key_pem": key_pem,
+        }
+    )
 
     # Enclave script reads from stdin, writes result to stdout
     enc_script = (

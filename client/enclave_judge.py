@@ -157,8 +157,17 @@ def host_compile_and_run(task):
 def enclave_verify_and_sign(task, host_results):
     """Verify results and sign verdict inside enclave using ECDSA key pair."""
 
-    # Load or create enclave key pair
-    private_key, public_key_pem = load_or_create_keypair()
+    # Load key: prefer stdin-injected key (via env), fallback to file
+    injected_pem = os.environ.get("_TEE_JUDGE_PRIVATE_KEY_PEM", "")
+    if injected_pem:
+        from cryptography.hazmat.primitives.serialization import load_pem_private_key
+
+        private_key = load_pem_private_key(injected_pem.encode(), password=None)
+        from client.enclave_keys import _serialize_public_key
+
+        public_key_pem = _serialize_public_key(private_key)
+    else:
+        private_key, public_key_pem = load_or_create_keypair()
 
     if host_results["status"] == "CE":
         verdict = "CE"
