@@ -195,9 +195,10 @@ def enclave_verify_and_sign(task, host_results):
                 if verdict == "AC":
                     verdict = "WA"
 
-    # Build sign payload
+    # Build sign payload (includes code hash to prevent code swap)
     nonce = task["nonce"]
-    sign_payload = f"{task['submission_id']}:{task['problem_id']}:{verdict}:{test_passed}:{test_total}:{nonce}"
+    code_hash = hashlib.sha256(task.get("code", "").encode()).hexdigest()[:16]
+    sign_payload = f"{task['submission_id']}:{task['problem_id']}:{verdict}:{test_passed}:{test_total}:{nonce}:{code_hash}"
 
     # Compute verdict hash for user_report_data binding
     verdict_hash = hashlib.sha256(sign_payload.encode()).digest()

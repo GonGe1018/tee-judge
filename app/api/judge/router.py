@@ -28,7 +28,7 @@ ALLOW_MOCK = os.environ.get("TEE_JUDGE_ALLOW_MOCK", "0") == "1"
 
 
 def _verify_attestation(
-    req: JudgeResultRequest, problem_id: int, public_key_pem: str
+    req: JudgeResultRequest, problem_id: int, public_key_pem: str, code_hash: str
 ) -> tuple[bool, str]:
     """Verify ECDSA signature + attestation quote (binary parsing + optional MAA)."""
 
@@ -39,7 +39,7 @@ def _verify_attestation(
     if not public_key_pem:
         return False, "No enclave public key registered for this user"
 
-    sign_payload = f"{req.submission_id}:{problem_id}:{req.verdict}:{req.test_passed}:{req.test_total}:{req.nonce}"
+    sign_payload = f"{req.submission_id}:{problem_id}:{req.verdict}:{req.test_passed}:{req.test_total}:{req.nonce}:{code_hash}"
 
     try:
         from app.core.quote_verify import verify_verdict_signature
@@ -167,7 +167,7 @@ async def report_result(
 
     with db_conn() as conn:
         sub = conn.execute(
-            "SELECT id, status, nonce, user_id, problem_id FROM submissions WHERE id = ?",
+            "SELECT id, status, nonce, user_id, problem_id, code, language FROM submissions WHERE id = ?",
             (req.submission_id,),
         ).fetchone()
         if not sub:
@@ -209,9 +209,12 @@ async def report_result(
                 "No enclave public key registered. Register via /api/auth/register-enclave-key first.",
             )
 
+        # Compute code hash for signature binding
+        code_hash = hashlib.sha256(sub["code"].encode()).hexdigest()[:16]
+
         # Verify attestation, ECDSA signature, and user_report_data binding
         attestation_verified, reason = _verify_attestation(
-            req, sub["problem_id"], public_key_pem
+            req, sub["problem_id"], public_key_pem, code_hash
         )
         if not attestation_verified:
             logger.warning(
@@ -223,6 +226,56 @@ async def report_result(
                 logger.warning(
                     f"Dev mode: accepting unverified attestation for #{req.submission_id}"
                 )
+
+        # Time-based verification: reject suspiciously fast results
+        from app.core.reverify import verify_execution_time
+
+        time_ok, time_reason = verify_execution_time(
+            req.time_ms, req.test_total, req.verdict
+        )
+        if not time_ok:
+            logger.warning(f"Time check failed for #{req.submission_id}: {time_reason}")
+            if os.environ.get("TEE_JUDGE_ENV", "production") != "dev":
+                raise HTTPException(
+                    403, f"Execution time verification failed: {time_reason}"
+                )
+
+        # Server-side random re-verification
+        from app.core.reverify import reverify_submission
+
+        testcases = conn.execute(
+            "SELECT order_num, input_data, expected_output FROM testcases WHERE problem_id = ? ORDER BY order_num",
+            (sub["problem_id"],),
+        ).fetchall()
+        tc_list = [
+            {
+                "order": tc["order_num"],
+                "input": tc["input_data"],
+                "expected": tc["expected_output"],
+            }
+            for tc in testcases
+        ]
+
+        rv_ok, rv_reason = reverify_submission(
+            code=sub["code"],
+            language=sub["language"],
+            testcases=tc_list,
+            reported_verdict=req.verdict,
+            reported_test_passed=req.test_passed,
+            reported_time_ms=req.time_ms,
+        )
+        if not rv_ok:
+            logger.warning(
+                f"Reverification failed for #{req.submission_id}: {rv_reason}"
+            )
+            if os.environ.get("TEE_JUDGE_ENV", "production") != "dev":
+                raise HTTPException(403, f"Server re-verification failed: {rv_reason}")
+            else:
+                logger.warning(
+                    f"Dev mode: accepting unverified result for #{req.submission_id}"
+                )
+
+        logger.info(f"Reverification: {rv_reason}")
 
         # Insert result + update status atomically
         try:
