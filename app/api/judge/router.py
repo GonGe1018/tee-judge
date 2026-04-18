@@ -30,7 +30,7 @@ ALLOW_MOCK = os.environ.get("TEE_JUDGE_ALLOW_MOCK", "0") == "1"
 def _verify_attestation(
     req: JudgeResultRequest, problem_id: int, public_key_pem: str
 ) -> tuple[bool, str]:
-    """Verify attestation quote, ECDSA signature, and user_report_data binding."""
+    """Verify ECDSA signature + attestation quote (binary parsing + optional MAA)."""
 
     # 1. Verify ECDSA signature with registered public key
     if not req.verdict_signature:
@@ -68,47 +68,27 @@ def _verify_attestation(
         logger.warning(
             f"Accepting mock attestation for submission #{req.submission_id}"
         )
+        # Still verify user_report_data in mock mode
+        expected_hash = hashlib.sha256(sign_payload.encode()).hexdigest()
+        quote_hash = quote_data.get("user_report_data", "")
+        if not hmac.compare_digest(expected_hash, quote_hash):
+            return False, "user_report_data mismatch in mock quote"
+
     elif sgx_mode == "hardware":
-        # Verify MRENCLAVE if configured
-        if EXPECTED_MRENCLAVE:
-            mrenclave = quote_data.get("mrenclave", "")
-            if not hmac.compare_digest(mrenclave, EXPECTED_MRENCLAVE):
-                return False, f"MRENCLAVE mismatch"
+        # Verify quote_b64 binary
+        quote_b64 = quote_data.get("quote_b64", "")
+        if not quote_b64:
+            return False, "No quote_b64 in hardware attestation"
 
-        # Verify required fields
-        for field in [
-            "mrenclave",
-            "mrsigner",
-            "nonce",
-            "quote_size",
-            "user_report_data",
-        ]:
-            if field not in quote_data:
-                return False, f"Missing field in attestation quote: {field}"
+        from app.core.quote_verify import verify_quote_full
 
-        # Verify nonce in quote
-        if quote_data.get("nonce") != req.nonce:
-            return False, "Nonce mismatch in attestation quote"
-
-        # 3. Verify user_report_data binding: verdict hash must match
-        expected_verdict_hash = hashlib.sha256(sign_payload.encode()).hexdigest()
-        quote_verdict_hash = quote_data.get("user_report_data", "")
-        if not hmac.compare_digest(expected_verdict_hash, quote_verdict_hash):
-            return False, f"user_report_data mismatch: verdict not bound to quote"
-
-        # 4. Verify quote_b64 contains matching user_report_data (parse raw quote)
-        try:
-            quote_b64 = quote_data.get("quote_b64", "")
-            if quote_b64:
-                quote_bytes = base64.b64decode(quote_b64)
-                # SGX Quote v3: report body starts at offset 48
-                # user_report_data is at report_body offset 320 (= quote offset 368)
-                # But in Gramine's quote structure, user_report_data written to
-                # /dev/attestation appears at specific offsets. We verify the first 32 bytes.
-                # The exact offset depends on quote version; we check the JSON field matches.
-                # Full binary quote verification requires DCAP QVL (future work).
-        except Exception:
-            pass  # Binary quote parsing is best-effort
+        ok, reason = verify_quote_full(
+            quote_b64=quote_b64,
+            expected_sign_payload=sign_payload,
+            expected_mrenclave=EXPECTED_MRENCLAVE,
+        )
+        if not ok:
+            return False, reason
 
     else:
         return False, f"Unknown SGX mode: {sgx_mode}"
