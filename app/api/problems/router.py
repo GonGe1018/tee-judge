@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
+from typing import List
 
 from app.core.schemas import ProblemSummary, ProblemDetail
 from app.db.database import db_conn
@@ -10,7 +11,7 @@ from app.db.database import db_conn
 router = APIRouter(prefix="/api/problems", tags=["problems"])
 
 
-@router.get("", response_model=list[ProblemSummary])
+@router.get("", response_model=List[ProblemSummary])
 def list_problems():
     with db_conn() as conn:
         rows = conn.execute(
