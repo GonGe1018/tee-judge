@@ -35,8 +35,9 @@ def encrypt_testcases(testcases: list[dict], enclave_public_key_pem: str) -> dic
         enclave_public_key_pem.encode(), backend=default_backend()
     )
 
-    # Generate ephemeral EC key pair
-    ephemeral_priv = generate_private_key(SECP256R1(), default_backend())
+    # Generate ephemeral EC key pair using SAME curve as enclave key
+    curve = enclave_pub.curve
+    ephemeral_priv = generate_private_key(curve, default_backend())
     ephemeral_pub = ephemeral_priv.public_key()
 
     # ECDH shared secret
