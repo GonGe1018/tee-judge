@@ -29,7 +29,7 @@ from client.enclave_keys import load_or_create_keypair, sign_verdict
 # Sandbox limits
 MAX_MEMORY_BYTES = 512 * 1024 * 1024  # 512MB
 MAX_OUTPUT_BYTES = 64 * 1024  # 64KB
-MAX_PROCESSES = 16
+MAX_PROCESSES = 64
 
 
 def _get_sandbox_preexec(for_compiler=False):
