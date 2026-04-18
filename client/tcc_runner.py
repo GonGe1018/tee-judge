@@ -17,6 +17,7 @@ LIBTCC_PATH = os.environ.get(
 )
 TCC_LIB_PATH = os.environ.get("TEE_JUDGE_TCC_LIB_PATH", "/usr/lib/x86_64-linux-gnu/tcc")
 TCC_INCLUDE_PATHS = [
+    "/usr/lib/x86_64-linux-gnu/tcc/include",  # TCC's own headers (override system)
     "/usr/include",
     "/usr/include/x86_64-linux-gnu",
 ]
@@ -76,9 +77,9 @@ def compile_code(code: str) -> tuple[bool, ctypes.c_void_p, int]:
 
     # Rename main to solve to avoid symbol conflicts
     code_bytes = code.encode()
-    code_bytes = code_bytes.replace(b"int main(", b"int solve(")
-    code_bytes = code_bytes.replace(b"int main (", b"int solve(")
-    code_bytes = code_bytes.replace(b"void main(", b"void solve(")
+    # Handle various main signatures
+    for pattern in [b"int main(", b"int main (", b"void main(", b"void main ("]:
+        code_bytes = code_bytes.replace(pattern, b"int solve(", 1)
 
     s = lib.tcc_new()
     if not s:
@@ -101,6 +102,9 @@ def compile_code(code: str) -> tuple[bool, ctypes.c_void_p, int]:
         return False, None, 0
 
     addr = lib.tcc_get_symbol(s, b"solve")
+    if not addr:
+        # Try "main" as fallback (in case rename didn't match)
+        addr = lib.tcc_get_symbol(s, b"main")
     if not addr:
         lib.tcc_delete(s)
         return False, None, 0
