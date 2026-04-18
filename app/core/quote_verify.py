@@ -205,6 +205,17 @@ def verify_quote_full(
             maa_mrenclave = claims.get("x-ms-sgx-mrenclave", "")
             if expected_mrenclave and maa_mrenclave != expected_mrenclave:
                 return False, f"MAA MRENCLAVE mismatch: {maa_mrenclave[:16]}..."
+
+            # Reject debug enclaves in production
+            is_debuggable = claims.get("x-ms-sgx-is-debuggable", True)
+            is_prod = os.environ.get("TEE_JUDGE_ENV", "production") != "dev"
+            if is_debuggable and is_prod:
+                return (
+                    False,
+                    "Debug enclave not allowed in production (x-ms-sgx-is-debuggable=true)",
+                )
+            if is_debuggable:
+                logger.warning("Accepting debug enclave in dev mode")
     else:
         # Production REQUIRES MAA
         is_prod = os.environ.get("TEE_JUDGE_ENV", "production") != "dev"
