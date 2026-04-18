@@ -23,6 +23,10 @@ import struct
 from dataclasses import dataclass
 from typing import Optional
 
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.exceptions import InvalidSignature
+
 logger = logging.getLogger("tee-judge")
 
 # SGX Quote v3 offsets
@@ -94,6 +98,22 @@ def verify_user_report_data(
             f"got={actual_hash.hex()[:16]}..."
         )
     return True, "OK"
+
+
+def verify_verdict_signature(
+    public_key_pem: str, payload: str, signature_hex: str
+) -> bool:
+    """Verify ECDSA signature with registered public key. Used by server."""
+    try:
+        public_key = serialization.load_pem_public_key(public_key_pem.encode())
+        public_key.verify(
+            bytes.fromhex(signature_hex),
+            payload.encode(),
+            ec.ECDSA(hashes.SHA256()),
+        )
+        return True
+    except (InvalidSignature, Exception):
+        return False
 
 
 # --- Azure MAA Verification ---

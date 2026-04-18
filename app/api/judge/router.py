@@ -42,7 +42,7 @@ def _verify_attestation(
     sign_payload = f"{req.submission_id}:{problem_id}:{req.verdict}:{req.test_passed}:{req.test_total}:{req.nonce}"
 
     try:
-        from client.enclave_keys import verify_verdict_signature
+        from app.core.quote_verify import verify_verdict_signature
 
         if not verify_verdict_signature(
             public_key_pem, sign_payload, req.verdict_signature
