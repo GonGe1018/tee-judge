@@ -1,11 +1,11 @@
 """2-phase SGX Judge Client daemon — v4 full enclave execution.
 
-Security model (v4):
-- Server sends code + testcase inputs (no expected outputs)
-- Enclave compiles + runs code via libtcc (host never sees inputs/outputs)
+Security model (v4 + RA-TLS):
+- Enclave starts ONCE, generates RA-TLS key pair (key never leaves enclave)
+- Server encrypts testcase inputs with enclave's RA-TLS public key
+- Enclave decrypts + compiles + runs via libtcc (host never sees inputs/outputs)
 - Enclave signs outputs hash + attestation quote
 - Server compares actual vs expected, determines verdict
-- Testcase inputs are protected inside enclave memory
 """
 
 import sys
@@ -16,6 +16,8 @@ import tempfile
 import time
 import logging
 import getpass
+import threading
+import uuid
 
 PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_DIR)
@@ -34,6 +36,131 @@ log = logging.getLogger("judge-daemon")
 SERVER = os.environ.get("TEE_JUDGE_SERVER", "http://127.0.0.1:8000")
 POLL_INTERVAL = int(os.environ.get("TEE_JUDGE_POLL_INTERVAL", "2"))
 SGX_ENABLED = os.path.exists("/dev/sgx_enclave")
+
+ENCLAVE_SERVER_SCRIPT = os.path.join(PROJECT_DIR, "client", "enclave_server.py")
+
+
+# --- EnclaveBridge: persistent long-running enclave ---
+
+
+class EnclaveBridge:
+    """Manages a persistent gramine-sgx enclave process.
+
+    Communicates via length-prefixed JSON-RPC over stdin/stdout.
+    RA-TLS key is generated once and reused for all tasks.
+    """
+
+    def __init__(self):
+        self.proc = None
+        self.public_key_pem = None
+        self._lock = threading.Lock()
+        self._start()
+
+    def _read_message(self) -> dict:
+        len_bytes = self.proc.stdout.read(4)
+        if len(len_bytes) < 4:
+            raise EOFError("enclave stdout closed")
+        length = int.from_bytes(len_bytes, "big")
+        payload = self.proc.stdout.read(length)
+        return json.loads(payload.decode("utf-8"))
+
+    def _write_message(self, msg: dict) -> None:
+        payload = json.dumps(msg, separators=(",", ":")).encode("utf-8")
+        self.proc.stdin.write(len(payload).to_bytes(4, "big"))
+        self.proc.stdin.write(payload)
+        self.proc.stdin.flush()
+
+    def _start(self):
+        """Start the enclave process and wait for ready message."""
+        log.info("Starting long-running SGX enclave...")
+        self.proc = subprocess.Popen(
+            ["gramine-sgx", "python3", ENCLAVE_SERVER_SCRIPT],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            cwd=PROJECT_DIR,
+            env={**os.environ},
+        )
+
+        # Wait for ready message (enclave sends public key on startup)
+        try:
+            ready = self._read_message()
+            if ready.get("type") == "ready" and ready.get("public_key_pem"):
+                self.public_key_pem = ready["public_key_pem"]
+                log.info(
+                    f"Enclave ready. RA-TLS public key obtained ({len(self.public_key_pem)} chars)"
+                )
+            else:
+                log.error(f"Unexpected ready message: {ready}")
+                raise RuntimeError("Enclave failed to initialize")
+        except Exception as e:
+            stderr = self.proc.stderr.read(500).decode("utf-8", errors="replace")
+            log.error(f"Enclave startup failed: {e}\nstderr: {stderr}")
+            raise
+
+    def submit_task(self, task: dict, timeout: int = 120) -> dict:
+        """Send task to enclave and wait for result."""
+        msg_id = str(uuid.uuid4())[:8]
+        request = {
+            "id": msg_id,
+            "type": "task",
+            "params": task,
+        }
+
+        with self._lock:
+            self._write_message(request)
+            # Read response with timeout
+            self.proc.stdout._sock.settimeout(timeout) if hasattr(
+                self.proc.stdout, "_sock"
+            ) else None
+            response = self._read_message()
+
+        if response.get("id") != msg_id:
+            raise RuntimeError(
+                f"Response ID mismatch: {response.get('id')} != {msg_id}"
+            )
+
+        if "error" in response:
+            err = response["error"]
+            raise RuntimeError(
+                f"Enclave error [{err.get('code')}]: {err.get('message')}"
+            )
+
+        return response["result"]
+
+    def is_alive(self) -> bool:
+        return self.proc is not None and self.proc.poll() is None
+
+    def restart(self):
+        """Restart the enclave process."""
+        log.warning("Restarting enclave...")
+        if self.proc:
+            try:
+                self.proc.terminate()
+                self.proc.wait(timeout=5)
+            except Exception:
+                self.proc.kill()
+        self._start()
+
+    def shutdown(self):
+        """Gracefully shutdown the enclave."""
+        if self.is_alive():
+            try:
+                self._write_message({"id": "shutdown", "type": "shutdown"})
+                self.proc.wait(timeout=5)
+            except Exception:
+                self.proc.kill()
+
+
+# Global enclave bridge (initialized when SGX is enabled)
+_enclave_bridge: EnclaveBridge | None = None
+
+
+def get_enclave_bridge() -> EnclaveBridge:
+    global _enclave_bridge
+    if _enclave_bridge is None or not _enclave_bridge.is_alive():
+        _enclave_bridge = EnclaveBridge()
+    return _enclave_bridge
 
 
 # --- Authentication ---
@@ -177,69 +304,57 @@ def get_enclave_public_key_in_sgx() -> str:
 
 
 def judge_in_sgx(task, hr=None):
-    """Run inside SGX enclave. v4: full execution with RA-TLS keys."""
+    """Run inside SGX enclave via long-running EnclaveBridge (v4) or subprocess (v3 fallback)."""
     if hr is None:
-        # v4: full enclave execution — enclave uses its own RA-TLS key
-        input_data = json.dumps({"task": task})
+        # v4: use persistent enclave bridge
+        bridge = get_enclave_bridge()
+        return bridge.submit_task(task, timeout=120)
     else:
-        # v3 fallback: host already ran, enclave just signs
+        # v3 fallback: host already ran, enclave just signs via subprocess
         from client.enclave_keys import SEALED_KEY_PATH
         from pathlib import Path
 
         key_pem = Path(SEALED_KEY_PATH).read_text()
         input_data = json.dumps(
-            {
-                "task": task,
-                "host_results": hr,
-                "private_key_pem": key_pem,
-            }
+            {"task": task, "host_results": hr, "private_key_pem": key_pem}
         )
 
-    # Enclave script reads from stdin, writes result to stdout
-    enc_script = (
-        "import sys,os,json\n"
-        f"sys.path.insert(0,{PROJECT_DIR!r})\n"
-        f"os.chdir({PROJECT_DIR!r})\n"
-        "from client.enclave_judge import enclave_compile_run_and_sign, enclave_hash_and_sign\n"
-        "data=json.loads(sys.stdin.read())\n"
-        "if 'private_key_pem' in data: os.environ['_TEE_JUDGE_PRIVATE_KEY_PEM']=data['private_key_pem']\n"
-        "if 'host_results' in data:\n"
-        "    r=enclave_hash_and_sign(data['task'],data['host_results'])\n"
-        "else:\n"
-        "    r=enclave_compile_run_and_sign(data['task'])\n"
-        "print('ENCLAVE_RESULT:'+json.dumps(r))\n"
-    )
-
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".py", prefix="tee-enc-", delete=False, dir="/tmp"
-    ) as f:
-        f.write(enc_script)
-        script_path = f.name
-
-    try:
-        proc = subprocess.run(
-            ["gramine-sgx", "python3", script_path],
-            input=input_data,
-            capture_output=True,
-            text=True,
-            timeout=120,
-            cwd=PROJECT_DIR,
-            env={**os.environ},
+        enc_script = (
+            "import sys,os,json\n"
+            f"sys.path.insert(0,{PROJECT_DIR!r})\n"
+            f"os.chdir({PROJECT_DIR!r})\n"
+            "from client.enclave_judge import enclave_hash_and_sign\n"
+            "data=json.loads(sys.stdin.read())\n"
+            "if 'private_key_pem' in data: os.environ['_TEE_JUDGE_PRIVATE_KEY_PEM']=data['private_key_pem']\n"
+            "r=enclave_hash_and_sign(data['task'],data['host_results'])\n"
+            "print('ENCLAVE_RESULT:'+json.dumps(r))\n"
         )
 
-        # Parse result from stdout
-        for line in proc.stdout.split("\n"):
-            if line.startswith("ENCLAVE_RESULT:"):
-                return json.loads(line[len("ENCLAVE_RESULT:") :])
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".py", prefix="tee-enc-", delete=False, dir="/tmp"
+        ) as f:
+            f.write(enc_script)
+            script_path = f.name
 
-        log.error(f"Enclave returned no result. stdout: {proc.stdout[-300:]}")
-        log.error(f"stderr: {proc.stderr[-300:]}")
-        return None
-    finally:
         try:
-            os.unlink(script_path)
-        except Exception:
-            pass
+            proc = subprocess.run(
+                ["gramine-sgx", "python3", script_path],
+                input=input_data,
+                capture_output=True,
+                text=True,
+                timeout=120,
+                cwd=PROJECT_DIR,
+                env={**os.environ},
+            )
+            for line in proc.stdout.split("\n"):
+                if line.startswith("ENCLAVE_RESULT:"):
+                    return json.loads(line[len("ENCLAVE_RESULT:") :])
+            return None
+        finally:
+            try:
+                os.unlink(script_path)
+            except Exception:
+                pass
 
 
 def judge_native(task, hr=None):
@@ -422,14 +537,15 @@ def main():
 
     # Register enclave public key
     if SGX_ENABLED:
-        # v4: get RA-TLS public key from inside enclave (key never leaves enclave)
-        log.info("Getting RA-TLS public key from SGX enclave...")
-        public_key_pem = get_enclave_public_key_in_sgx()
-        if public_key_pem:
+        # v4: start long-running enclave, get RA-TLS public key
+        log.info("Starting long-running SGX enclave (RA-TLS mode)...")
+        try:
+            bridge = get_enclave_bridge()
+            public_key_pem = bridge.public_key_pem
             log.info("RA-TLS public key obtained from enclave")
             register_public_key(SERVER, headers, public_key_pem)
-        else:
-            log.warning("Failed to get RA-TLS key, falling back to ECDSA")
+        except Exception as e:
+            log.warning(f"Failed to start RA-TLS enclave: {e}, falling back to ECDSA")
             _, public_key_pem = load_or_create_keypair()
             register_public_key(SERVER, headers, public_key_pem)
     else:
