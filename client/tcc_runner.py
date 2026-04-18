@@ -116,7 +116,10 @@ def run_with_input(func_addr: int, input_data: str, time_limit_ms: int = 2000) -
     """Run compiled function with given stdin input, capture stdout.
 
     Returns {"output": str, "time_ms": int, "status": "OK"|"RE"|"TLE"}.
+    Uses SIGALRM for time limit enforcement (Linux only).
     """
+    import signal
+
     libc = _get_libc()
 
     input_bytes = input_data.encode()
@@ -141,16 +144,33 @@ def run_with_input(func_addr: int, input_data: str, time_limit_ms: int = 2000) -
     FUNC_TYPE = ctypes.CFUNCTYPE(ctypes.c_int)
     func = FUNC_TYPE(func_addr)
 
+    # Set alarm for time limit
+    timed_out = False
+
+    def _alarm_handler(signum, frame):
+        nonlocal timed_out
+        timed_out = True
+        raise TimeoutError("TLE")
+
+    old_handler = signal.signal(signal.SIGALRM, _alarm_handler)
+    # Set alarm with 1 second buffer over time limit
+    alarm_seconds = max(1, (time_limit_ms // 1000) + 1)
+    signal.alarm(alarm_seconds)
+
     start = time.perf_counter()
     try:
-        # TODO: time limit enforcement is tricky without signals in enclave
-        # For now, just run and measure time
         func()
         elapsed_ms = int((time.perf_counter() - start) * 1000)
         status = "TLE" if elapsed_ms > time_limit_ms else "OK"
+    except TimeoutError:
+        elapsed_ms = time_limit_ms
+        status = "TLE"
     except Exception:
         elapsed_ms = int((time.perf_counter() - start) * 1000)
         status = "RE"
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, old_handler)
 
     # Flush C stdout buffer
     libc.fflush(None)
