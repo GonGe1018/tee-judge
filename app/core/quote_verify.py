@@ -120,88 +120,39 @@ def verify_verdict_signature(
 
 # Azure MAA endpoint (configurable via env)
 MAA_ENDPOINT = os.environ.get("TEE_JUDGE_MAA_ENDPOINT", "")
-MAA_TENANT_ID = os.environ.get("TEE_JUDGE_MAA_TENANT_ID", "")
-MAA_CLIENT_ID = os.environ.get("TEE_JUDGE_MAA_CLIENT_ID", "")
-MAA_CLIENT_SECRET = os.environ.get("TEE_JUDGE_MAA_CLIENT_SECRET", "")
 
 
-def _get_maa_token() -> Optional[str]:
-    """Get OAuth2 token for Azure MAA."""
-    if not all([MAA_TENANT_ID, MAA_CLIENT_ID, MAA_CLIENT_SECRET]):
-        return None
-
-    try:
-        import requests
-
-        token_url = (
-            f"https://login.microsoftonline.com/{MAA_TENANT_ID}/oauth2/v2.0/token"
-        )
-        r = requests.post(
-            token_url,
-            data={
-                "grant_type": "client_credentials",
-                "client_id": MAA_CLIENT_ID,
-                "client_secret": MAA_CLIENT_SECRET,
-                "scope": "https://attest.azure.net/.default",
-            },
-            timeout=10,
-        )
-        if r.status_code == 200:
-            return r.json()["access_token"]
-        logger.error(f"MAA token error: {r.status_code} {r.text[:200]}")
-    except Exception as e:
-        logger.error(f"MAA token error: {e}")
-    return None
-
-
-def verify_quote_with_maa(
-    quote_bytes: bytes, runtime_data: bytes = b""
-) -> tuple[bool, str, dict]:
-    """Verify SGX quote using Azure MAA REST API.
+def verify_quote_with_maa(quote_bytes: bytes) -> tuple[bool, str, dict]:
+    """Verify SGX quote using Azure MAA REST API (anonymous, no OAuth2 needed).
 
     Returns (verified, reason, maa_claims).
     """
     if not MAA_ENDPOINT:
         return False, "MAA endpoint not configured (set TEE_JUDGE_MAA_ENDPOINT)", {}
 
-    token = _get_maa_token()
-    if not token:
-        return False, "Failed to get MAA OAuth2 token", {}
-
     try:
         import requests
 
-        # Base64URL encode quote (no padding)
         quote_b64url = base64.urlsafe_b64encode(quote_bytes).rstrip(b"=").decode()
 
         url = f"{MAA_ENDPOINT}/attest/SgxEnclave?api-version=2022-08-01"
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-        }
-        payload = {
-            "quote": quote_b64url,
-        }
-        if runtime_data:
-            payload["runtimeData"] = {
-                "data": base64.urlsafe_b64encode(runtime_data).rstrip(b"=").decode(),
-                "dataType": "Binary",
-            }
-
-        r = requests.post(url, headers=headers, json=payload, timeout=30)
+        r = requests.post(
+            url,
+            json={"quote": quote_b64url},
+            headers={"Content-Type": "application/json"},
+            timeout=30,
+        )
 
         if r.status_code == 200:
             result = r.json()
-            # MAA returns a JWT token with claims
             maa_token = result.get("token", "")
-            # Decode JWT payload (without verification — MAA already verified)
+            # Decode JWT payload (MAA already verified the quote)
             parts = maa_token.split(".")
             if len(parts) >= 2:
-                # Add padding
                 payload_b64 = parts[1] + "=" * (4 - len(parts[1]) % 4)
                 claims = json.loads(base64.urlsafe_b64decode(payload_b64))
                 logger.info(
-                    f"MAA verification succeeded. Claims: {list(claims.keys())}"
+                    f"MAA verification succeeded: mrenclave={claims.get('x-ms-sgx-mrenclave', '?')[:16]}..."
                 )
                 return True, "OK", claims
             return True, "OK (no claims parsed)", {}
@@ -217,8 +168,9 @@ def verify_quote_full(
     expected_sign_payload: str,
     expected_mrenclave: str = "",
 ) -> tuple[bool, str]:
-    """Full quote verification: parse binary + verify user_report_data + optional MAA.
+    """Full quote verification: parse binary + verify user_report_data + MAA.
 
+    In production, MAA verification is REQUIRED.
     Returns (verified, reason).
     """
     # 1. Decode and parse quote binary
@@ -243,17 +195,26 @@ def verify_quote_full(
     if not ok:
         return False, reason
 
-    # 4. Azure MAA verification (if configured)
+    # 4. Azure MAA verification (Intel signature chain)
     if MAA_ENDPOINT:
         ok, reason, claims = verify_quote_with_maa(quote_bytes)
         if not ok:
             return False, f"MAA verification failed: {reason}"
-        # Optionally verify MAA claims match our expectations
+        # Cross-check MAA claims with our expectations
         if claims:
             maa_mrenclave = claims.get("x-ms-sgx-mrenclave", "")
             if expected_mrenclave and maa_mrenclave != expected_mrenclave:
                 return False, f"MAA MRENCLAVE mismatch: {maa_mrenclave[:16]}..."
     else:
-        logger.warning("MAA not configured — skipping remote quote verification")
+        # Production REQUIRES MAA
+        is_prod = os.environ.get("TEE_JUDGE_ENV", "production") != "dev"
+        if is_prod:
+            return (
+                False,
+                "MAA endpoint not configured. Required in production for Intel signature verification.",
+            )
+        logger.warning(
+            "MAA not configured — skipping Intel signature verification (dev mode only)"
+        )
 
     return True, "OK"
