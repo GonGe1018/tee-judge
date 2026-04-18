@@ -7,7 +7,6 @@ If mismatch detected, the result is rejected.
 
 from __future__ import annotations
 
-import os
 import random
 import subprocess
 import tempfile
@@ -16,29 +15,22 @@ import logging
 import math
 from pathlib import Path
 
+from app.core.config import settings
+
 logger = logging.getLogger("tee-judge")
 
-# Minimum number of testcases to re-verify
-REVERIFY_MIN = int(os.environ.get("TEE_JUDGE_REVERIFY_MIN", "10"))
-
-# Percentage of testcases to re-verify (0.0 - 1.0)
-REVERIFY_RATIO = float(os.environ.get("TEE_JUDGE_REVERIFY_RATIO", "0.3"))
-
-# Minimum expected execution time per testcase (ms) — if total is way too fast, suspicious
-# Set to 0 to disable (simple problems like A+B run in <1ms)
-MIN_EXPECTED_TIME_PER_TEST_MS = int(os.environ.get("TEE_JUDGE_MIN_TIME_PER_TEST", "0"))
+MIN_EXPECTED_TIME_PER_TEST_MS = 0
 
 
 def _compute_reverify_count(total: int) -> int:
-    """Compute K = max(REVERIFY_MIN, ceil(total * REVERIFY_RATIO)).
-
-    Examples:
-      30 testcases  → max(10, 9)  = 10
-      50 testcases  → max(10, 15) = 15
-      100 testcases → max(10, 30) = 30
-      200 testcases → max(10, 60) = 60
-    """
-    return min(total, max(REVERIFY_MIN, math.ceil(total * REVERIFY_RATIO)))
+    """Compute K = max(REVERIFY_MIN, ceil(total * REVERIFY_RATIO))."""
+    return min(
+        total,
+        max(
+            settings.TEE_JUDGE_REVERIFY_MIN,
+            math.ceil(total * settings.TEE_JUDGE_REVERIFY_RATIO),
+        ),
+    )
 
 
 def reverify_submission(

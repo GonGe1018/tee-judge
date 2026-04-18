@@ -1,7 +1,8 @@
 """TEE-Judge FastAPI Application."""
 
+from __future__ import annotations
+
 import logging
-import os
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -20,46 +21,42 @@ logging.basicConfig(
 )
 logger = logging.getLogger("tee-judge")
 
-_env = os.environ.get("TEE_JUDGE_ENV", "production")
-
 app = FastAPI(
     title=settings.PROJECT_NAME,
     version=settings.VERSION,
-    docs_url="/docs" if _env == "dev" else None,
-    redoc_url="/redoc" if _env == "dev" else None,
+    docs_url="/docs" if settings.is_dev else None,
+    redoc_url="/redoc" if settings.is_dev else None,
 )
 
-# WebSocket routes (must be before CORS middleware and static mount)
+# WebSocket routes (before CORS middleware)
 app.include_router(ws_router)
 
 # CORS
-_cors_raw = os.environ.get("TEE_JUDGE_CORS_ORIGINS", "")
-if not _cors_raw or _cors_raw == "*":
-    if _env == "dev":
-        app.add_middleware(
-            CORSMiddleware,
-            allow_origins=["*"],
-            allow_credentials=False,
-            allow_methods=["*"],
-            allow_headers=["*"],
-        )
-    # Production without CORS_ORIGINS: no CORS middleware (same-origin only)
-else:
+cors_origins = settings.cors_origins
+if cors_origins:
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=[o.strip() for o in _cors_raw.split(",")],
+        allow_origins=cors_origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
     )
+elif settings.is_dev:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+# Production without CORS_ORIGINS: no CORS middleware (same-origin only)
 
 
 @app.on_event("startup")
 def startup():
     init_db()
     logger.info(f"{settings.PROJECT_NAME} v{settings.VERSION} started")
-    env = os.environ.get("TEE_JUDGE_ENV", "production")
-    logger.info(f"Environment: {env}")
+    logger.info(f"Environment: {settings.TEE_JUDGE_ENV}")
 
 
 # API routes

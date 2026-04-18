@@ -1,11 +1,19 @@
 """Users API router: register, login, judge token."""
 
+from __future__ import annotations
+
 import logging
 
 from fastapi import APIRouter, HTTPException, Depends
-from pydantic import BaseModel
 
-from app.core.schemas import RegisterRequest, LoginRequest, TokenResponse
+from app.api.users.dto import (
+    RegisterRequest,
+    LoginRequest,
+    TokenResponse,
+    JudgeTokenRequest,
+    JudgeTokenResponse,
+    RegisterKeyRequest,
+)
 from app.core.auth import (
     hash_password,
     verify_password,
@@ -14,39 +22,20 @@ from app.core.auth import (
     get_current_user,
 )
 from app.db.database import db_conn
+from app.db import users_crud
 
 logger = logging.getLogger("tee-judge")
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 
-class JudgeTokenRequest(BaseModel):
-    judge_key: str
-
-
-class JudgeTokenResponse(BaseModel):
-    token: str
-    user_id: int
-    username: str
-    role: str
-
-
 @router.post("/register", response_model=TokenResponse)
 def register(req: RegisterRequest):
     with db_conn() as conn:
-        existing = conn.execute(
-            "SELECT id FROM users WHERE username = ?", (req.username,)
-        ).fetchone()
-        if existing:
+        if users_crud.get_user_by_username(conn, req.username):
             raise HTTPException(409, "Username already taken")
-
         pw_hash = hash_password(req.password)
-        cursor = conn.execute(
-            "INSERT INTO users (username, password_hash) VALUES (?, ?)",
-            (req.username, pw_hash),
-        )
-        user_id = cursor.lastrowid
-        conn.commit()
+        user_id = users_crud.create_user(conn, req.username, pw_hash)
 
     token = create_token(user_id, req.username, role="user")
     logger.info(f"User registered: {req.username} (#{user_id})")
@@ -56,10 +45,7 @@ def register(req: RegisterRequest):
 @router.post("/login", response_model=TokenResponse)
 def login(req: LoginRequest):
     with db_conn() as conn:
-        user = conn.execute(
-            "SELECT id, username, password_hash FROM users WHERE username = ?",
-            (req.username,),
-        ).fetchone()
+        user = users_crud.get_user_by_username(conn, req.username)
 
     if not user or not verify_password(req.password, user["password_hash"]):
         raise HTTPException(401, "Invalid username or password")
@@ -71,8 +57,7 @@ def login(req: LoginRequest):
 
 @router.post("/judge-token", response_model=JudgeTokenResponse)
 def get_judge_token(req: JudgeTokenRequest, user: dict = Depends(get_current_user)):
-    """Get a judge-role token. Requires valid user token + judge_key.
-    This separates the judge role from normal users."""
+    """Get a judge-role token. Requires valid user token + judge_key."""
     if not verify_judge_key(req.judge_key):
         raise HTTPException(403, "Invalid judge key")
 
@@ -86,20 +71,14 @@ def get_judge_token(req: JudgeTokenRequest, user: dict = Depends(get_current_use
     )
 
 
-class RegisterKeyRequest(BaseModel):
-    public_key: str
-
-
 @router.post("/register-enclave-key")
 def register_enclave_key(
     req: RegisterKeyRequest, user: dict = Depends(get_current_user)
 ):
     """Register enclave's ECDSA public key. Judge role required. One-time only."""
-    # Must have judge role
     if user.get("role") != "judge":
         raise HTTPException(403, "Judge role required to register enclave key")
 
-    # Validate PEM
     try:
         from cryptography.hazmat.primitives.serialization import load_pem_public_key
         from cryptography.hazmat.backends import default_backend
@@ -109,20 +88,12 @@ def register_enclave_key(
         raise HTTPException(400, "Invalid PEM public key")
 
     with db_conn() as conn:
-        # Check if key already registered (one-time only)
-        existing = conn.execute(
-            "SELECT enclave_public_key FROM users WHERE id = ?", (user["user_id"],)
-        ).fetchone()
-        if existing and existing["enclave_public_key"]:
+        existing_key = users_crud.get_enclave_public_key(conn, user["user_id"])
+        if existing_key:
             raise HTTPException(
                 409, "Enclave public key already registered. Cannot overwrite."
             )
-
-        conn.execute(
-            "UPDATE users SET enclave_public_key = ? WHERE id = ?",
-            (req.public_key, user["user_id"]),
-        )
-        conn.commit()
+        users_crud.set_user_enclave_key(conn, user["user_id"], req.public_key)
 
     logger.info(f"Enclave public key registered for user #{user['user_id']}")
     return {"status": "ok"}
