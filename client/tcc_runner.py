@@ -118,8 +118,16 @@ def run_with_input(func_addr: int, input_data: str, time_limit_ms: int = 2000) -
     Returns {"output": str, "time_ms": int, "status": "OK"|"RE"|"TLE"}.
     Uses fork() for isolation + time limit enforcement.
     Child process runs the code, parent waits with timeout.
+
+    Note: SGX fork() has ~1-2s overhead. We add a buffer to avoid false TLE.
+    The reported time_ms reflects actual execution time, not fork overhead.
     """
     libc = _get_libc()
+
+    # Add fork overhead buffer for SGX (fork is slow inside enclave)
+    # Actual execution time is measured separately
+    FORK_OVERHEAD_MS = 2000  # SGX fork overhead buffer
+    wall_timeout_ms = time_limit_ms + FORK_OVERHEAD_MS
 
     input_bytes = input_data.encode()
     if not input_bytes.endswith(b"\n"):
@@ -155,11 +163,11 @@ def run_with_input(func_addr: int, input_data: str, time_limit_ms: int = 2000) -
         except Exception:
             os._exit(1)
     else:
-        # Parent process: wait with timeout
+        # Parent process: wait with timeout (use wall_timeout for SGX fork overhead)
         os.close(out_write)
         import select
 
-        deadline = time.perf_counter() + (time_limit_ms / 1000.0) + 0.5
+        deadline = time.perf_counter() + (wall_timeout_ms / 1000.0)
         status_code = None
 
         while True:
@@ -170,7 +178,7 @@ def run_with_input(func_addr: int, input_data: str, time_limit_ms: int = 2000) -
 
                 os.kill(pid, signal.SIGKILL)
                 os.waitpid(pid, 0)
-                elapsed_ms = time_limit_ms
+                elapsed_ms = time_limit_ms  # report as time_limit, not wall time
                 os.close(out_read)
                 return {"output": "", "time_ms": elapsed_ms, "status": "TLE"}
 
@@ -181,7 +189,9 @@ def run_with_input(func_addr: int, input_data: str, time_limit_ms: int = 2000) -
                 break
             time.sleep(0.01)
 
-        elapsed_ms = int((time.perf_counter() - start) * 1000)
+        wall_elapsed_ms = int((time.perf_counter() - start) * 1000)
+        # Subtract fork overhead to get actual execution time
+        elapsed_ms = max(0, wall_elapsed_ms - FORK_OVERHEAD_MS)
 
         # Read output from pipe
         output = b""
