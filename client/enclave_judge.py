@@ -291,28 +291,56 @@ def enclave_hash_and_sign(task, host_results):
 def enclave_compile_run_and_sign(task):
     """Full enclave execution: compile + run + hash + sign + attestation.
 
-    Uses libtcc to compile and run C code entirely inside the enclave.
-    No host involvement in execution — host cannot see inputs or outputs.
-    This is the v4 secure path that prevents testcase input leakage.
+    v4 (RA-TLS): testcases are encrypted with enclave's RA-TLS public key.
+    Enclave decrypts testcases, runs via libtcc, signs outputs hash.
+    Host never sees testcase inputs or outputs.
     """
     from client.tcc_runner import compile_and_run_all
 
-    # Load ECDSA key
-    injected_pem = os.environ.get("_TEE_JUDGE_PRIVATE_KEY_PEM", "")
-    if injected_pem:
-        from cryptography.hazmat.primitives.serialization import load_pem_private_key
+    # Resolve testcases: decrypt if encrypted, else use plaintext
+    encrypted_testcases = task.get("encrypted_testcases")
+    if encrypted_testcases:
+        try:
+            from client.ratls_keys import decrypt_with_ratls_key
+            import json as _json
+
+            decrypted = decrypt_with_ratls_key(encrypted_testcases)
+            testcases = _json.loads(decrypted)
+        except Exception as e:
+            # Fallback to plaintext if decryption fails (e.g., not in SGX)
+            testcases = task.get("testcases", [])
+    else:
+        testcases = task.get("testcases", [])
+
+    # Load signing key: prefer RA-TLS key (enclave-only), fallback to ECDSA
+    try:
+        from client.ratls_keys import generate_ratls_keypair
+        from cryptography.hazmat.primitives.serialization import load_der_private_key
         from cryptography.hazmat.backends import default_backend
 
-        private_key = load_pem_private_key(
-            injected_pem.encode(), password=None, backend=default_backend()
+        der_key, _ = generate_ratls_keypair()
+        private_key = load_der_private_key(
+            der_key, password=None, backend=default_backend()
         )
-    else:
-        private_key, _ = load_or_create_keypair()
+    except Exception:
+        # Fallback to ECDSA key (non-SGX mode)
+        injected_pem = os.environ.get("_TEE_JUDGE_PRIVATE_KEY_PEM", "")
+        if injected_pem:
+            from cryptography.hazmat.primitives.serialization import (
+                load_pem_private_key,
+            )
+            from cryptography.hazmat.backends import default_backend
+
+            private_key = load_pem_private_key(
+                injected_pem.encode(), password=None, backend=default_backend()
+            )
+        else:
+            private_key, _ = load_or_create_keypair()
 
     # Compile and run all testcases inside enclave via libtcc
     run_result = compile_and_run_all(
         code=task["code"],
-        testcases=task["testcases"],
+        testcases=testcases,
         time_limit_ms=task.get("time_limit_ms", 2000),
     )
 

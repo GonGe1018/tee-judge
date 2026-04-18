@@ -165,6 +165,23 @@ def poll_task(user: dict = Depends(require_judge_role)):
 
         problem = problems_crud.get_problem_by_id(conn, sub["problem_id"])
         testcases = problems_crud.get_testcases_for_problem(conn, sub["problem_id"])
+        public_key_pem = users_crud.get_enclave_public_key(conn, user_id)
+
+    tc_plain = [
+        {"order": tc["order_num"], "input": tc["input_data"]} for tc in testcases
+    ]
+
+    # Encrypt testcases if enclave public key is registered
+    encrypted_testcases = None
+    if public_key_pem:
+        try:
+            from app.core.testcase_crypto import encrypt_testcases
+
+            encrypted_testcases = encrypt_testcases(tc_plain, public_key_pem)
+        except Exception as e:
+            logger.warning(
+                f"Failed to encrypt testcases: {e}, falling back to plaintext"
+            )
 
     task = JudgeTask(
         submission_id=sub["id"],
@@ -173,13 +190,15 @@ def poll_task(user: dict = Depends(require_judge_role)):
         code=sub["code"],
         time_limit_ms=problem["time_limit_ms"] if problem else 2000,
         memory_limit_kb=problem["memory_limit_kb"] if problem else 262144,
-        testcases=[
-            {"order": tc["order_num"], "input": tc["input_data"]} for tc in testcases
-        ],
+        testcases=tc_plain if not encrypted_testcases else [],  # empty if encrypted
+        encrypted_testcases=encrypted_testcases,
         nonce=nonce,
     )
 
-    logger.info(f"Task dispatched: submission #{sub['id']} for user #{user_id}")
+    logger.info(
+        f"Task dispatched: submission #{sub['id']} for user #{user_id} "
+        f"({'encrypted' if encrypted_testcases else 'plaintext'} testcases)"
+    )
     return {"task": task}
 
 

@@ -115,7 +115,7 @@ def authenticate(server: str) -> str:
 
 
 def register_public_key(server: str, headers: dict, public_key_pem: str):
-    """Register enclave's ECDSA public key with server."""
+    """Register enclave's public key with server (ECDSA or RA-TLS)."""
     try:
         r = requests.post(
             f"{server}/api/auth/register-enclave-key",
@@ -125,6 +125,8 @@ def register_public_key(server: str, headers: dict, public_key_pem: str):
         )
         if r.status_code == 200:
             log.info("Enclave public key registered with server")
+        elif r.status_code == 409:
+            log.info("Enclave public key already registered")
         else:
             log.warning(
                 f"Failed to register public key: {r.status_code} {r.text[:200]}"
@@ -133,26 +135,58 @@ def register_public_key(server: str, headers: dict, public_key_pem: str):
         log.warning(f"Failed to register public key: {e}")
 
 
+def get_enclave_public_key_in_sgx() -> str:
+    """Get RA-TLS public key from inside SGX enclave."""
+    enc_script = (
+        "import sys,os,json\n"
+        f"sys.path.insert(0,{PROJECT_DIR!r})\n"
+        f"os.chdir({PROJECT_DIR!r})\n"
+        "from client.ratls_keys import get_ratls_public_key_pem\n"
+        "print('RATLS_PUBKEY:'+get_ratls_public_key_pem())\n"
+    )
+
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".py", prefix="tee-init-", delete=False, dir="/tmp"
+    ) as f:
+        f.write(enc_script)
+        script_path = f.name
+
+    try:
+        proc = subprocess.run(
+            ["gramine-sgx", "python3", script_path],
+            input="{}",
+            capture_output=True,
+            text=True,
+            timeout=60,
+            cwd=PROJECT_DIR,
+            env={**os.environ},
+        )
+        for line in proc.stdout.split("\n"):
+            if line.startswith("RATLS_PUBKEY:"):
+                return line[len("RATLS_PUBKEY:") :]
+        log.error(f"Failed to get RA-TLS key. stderr: {proc.stderr[-300:]}")
+        return None
+    finally:
+        try:
+            os.unlink(script_path)
+        except Exception:
+            pass
+
+
 # --- SGX Judging (stdin/stdout — TOCTOU-safe) ---
 
 
 def judge_in_sgx(task, hr=None):
-    """Run inside SGX enclave. v4: full execution, v3 fallback: hash+sign only."""
-    from client.enclave_keys import SEALED_KEY_PATH
-    from pathlib import Path
-
-    key_pem = Path(SEALED_KEY_PATH).read_text()
-
+    """Run inside SGX enclave. v4: full execution with RA-TLS keys."""
     if hr is None:
-        # v4: full enclave execution (compile + run + sign)
-        input_data = json.dumps(
-            {
-                "task": task,
-                "private_key_pem": key_pem,
-            }
-        )
+        # v4: full enclave execution — enclave uses its own RA-TLS key
+        input_data = json.dumps({"task": task})
     else:
         # v3 fallback: host already ran, enclave just signs
+        from client.enclave_keys import SEALED_KEY_PATH
+        from pathlib import Path
+
+        key_pem = Path(SEALED_KEY_PATH).read_text()
         input_data = json.dumps(
             {
                 "task": task,
@@ -234,8 +268,12 @@ def process_task(headers: dict):
         return "no_task"
 
     sid = task["submission_id"]
-    tc_count = len(task["testcases"])
-    log.info(f"Task: submission #{sid}, {tc_count} testcases")
+    tc_count = len(task.get("testcases") or []) or (
+        "encrypted" if task.get("encrypted_testcases") else 0
+    )
+    log.info(
+        f"Task: submission #{sid}, testcases={'encrypted' if task.get('encrypted_testcases') else tc_count}"
+    )
 
     if SGX_ENABLED:
         # v4: Full enclave execution — host never sees inputs/outputs
@@ -382,10 +420,23 @@ def main():
     token = authenticate(SERVER)
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
-    # Load or create enclave key pair and register public key
-    private_key, public_key_pem = load_or_create_keypair()
-    log.info(f"Enclave key pair loaded (public key: {public_key_pem[:40]}...)")
-    register_public_key(SERVER, headers, public_key_pem)
+    # Register enclave public key
+    if SGX_ENABLED:
+        # v4: get RA-TLS public key from inside enclave (key never leaves enclave)
+        log.info("Getting RA-TLS public key from SGX enclave...")
+        public_key_pem = get_enclave_public_key_in_sgx()
+        if public_key_pem:
+            log.info("RA-TLS public key obtained from enclave")
+            register_public_key(SERVER, headers, public_key_pem)
+        else:
+            log.warning("Failed to get RA-TLS key, falling back to ECDSA")
+            _, public_key_pem = load_or_create_keypair()
+            register_public_key(SERVER, headers, public_key_pem)
+    else:
+        # Non-SGX: use ECDSA key (dev/mock mode)
+        _, public_key_pem = load_or_create_keypair()
+        log.info(f"Enclave key pair loaded (public key: {public_key_pem[:40]}...)")
+        register_public_key(SERVER, headers, public_key_pem)
 
     # Try WebSocket first, fall back to polling
     ws_available = True
