@@ -1,7 +1,7 @@
-"""Server-side random re-verification of judge results.
+"""Server-side re-verification of judge results.
 
-Picks K random testcases from the submission, compiles and runs the code
-independently, and compares outputs with the reported verdict.
+For AC verdicts: full verification (all testcases).
+For other verdicts: random K testcases.
 If mismatch detected, the result is rejected.
 """
 
@@ -30,9 +30,12 @@ def reverify_submission(
     reported_verdict: str,
     reported_test_passed: int,
     reported_time_ms: int,
+    time_limit_ms: int = 2000,
 ) -> tuple[bool, str]:
-    """Re-verify K random testcases by compiling and running on server.
+    """Re-verify judge results by compiling and running on server.
 
+    AC verdicts: full verification (all testcases).
+    Other verdicts: random K testcases.
     Returns (passed, reason).
     """
     if reported_verdict == "CE":
@@ -45,9 +48,12 @@ def reverify_submission(
     if not testcases:
         return True, "No testcases to verify"
 
-    # Pick K random testcases
-    k = min(REVERIFY_COUNT, len(testcases))
-    selected = random.sample(testcases, k)
+    # AC: full verification. Others: random K.
+    if reported_verdict == "AC":
+        selected = testcases
+    else:
+        k = min(REVERIFY_COUNT, len(testcases))
+        selected = random.sample(testcases, k)
 
     # Compile
     with tempfile.TemporaryDirectory(prefix="tee-reverify-") as tmpdir:
@@ -76,6 +82,9 @@ def reverify_submission(
 
         # Run selected testcases
         mismatches = 0
+        run_timeout = max(
+            time_limit_ms / 1000.0 + 1.0, 2.0
+        )  # time_limit + 1s buffer, min 2s
         for tc in selected:
             expected = tc["expected"].strip()
             try:
@@ -84,7 +93,7 @@ def reverify_submission(
                     input=tc["input"],
                     capture_output=True,
                     text=True,
-                    timeout=5,
+                    timeout=run_timeout,
                 )
                 actual = r.stdout.strip()
                 if r.returncode != 0:
@@ -111,9 +120,12 @@ def reverify_submission(
                 pass  # Skip on error
 
         if mismatches > 0:
-            return False, f"Reverification failed: {mismatches}/{k} testcases mismatch"
+            return (
+                False,
+                f"Reverification failed: {mismatches}/{len(selected)} testcases mismatch",
+            )
 
-    return True, f"Reverification passed ({k} testcases)"
+    return True, f"Reverification passed ({len(selected)} testcases)"
 
 
 def verify_execution_time(

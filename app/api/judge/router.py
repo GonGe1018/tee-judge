@@ -256,6 +256,12 @@ async def report_result(
             for tc in testcases
         ]
 
+        # Get problem time limit for reverification
+        problem = conn.execute(
+            "SELECT time_limit_ms FROM problems WHERE id = ?", (sub["problem_id"],)
+        ).fetchone()
+        problem_time_limit = problem["time_limit_ms"] if problem else 2000
+
         rv_ok, rv_reason = reverify_submission(
             code=sub["code"],
             language=sub["language"],
@@ -263,6 +269,7 @@ async def report_result(
             reported_verdict=req.verdict,
             reported_test_passed=req.test_passed,
             reported_time_ms=req.time_ms,
+            time_limit_ms=problem_time_limit,
         )
         if not rv_ok:
             logger.warning(
