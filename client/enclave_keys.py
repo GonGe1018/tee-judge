@@ -60,9 +60,7 @@ def _load_private_key(data: bytes) -> ec.EllipticCurvePrivateKey:
 def load_or_create_keypair() -> tuple[ec.EllipticCurvePrivateKey, str]:
     """Load existing key pair or create new one.
 
-    In SGX: uses Gramine's encrypted files (sealed storage).
-    Outside SGX: uses plain file (dev only).
-
+    If file write fails (e.g., inside SGX enclave), keeps key in memory only.
     Returns (private_key, public_key_pem).
     """
     sealed_path = Path(SEALED_KEY_PATH)
@@ -70,10 +68,11 @@ def load_or_create_keypair() -> tuple[ec.EllipticCurvePrivateKey, str]:
     if sealed_path.exists():
         try:
             key_data = sealed_path.read_bytes()
-            private_key = _load_private_key(key_data)
-            public_pem = _serialize_public_key(private_key)
-            logger.info(f"Loaded existing enclave key pair from {sealed_path}")
-            return private_key, public_pem
+            if key_data:  # not empty
+                private_key = _load_private_key(key_data)
+                public_pem = _serialize_public_key(private_key)
+                logger.info(f"Loaded existing enclave key pair from {sealed_path}")
+                return private_key, public_pem
         except Exception as e:
             logger.warning(f"Failed to load sealed key: {e}. Generating new pair.")
 
@@ -81,10 +80,16 @@ def load_or_create_keypair() -> tuple[ec.EllipticCurvePrivateKey, str]:
     private_key = _generate_keypair()
     key_data = _serialize_private_key(private_key)
 
-    # Save (in SGX, Gramine encrypts this via encrypted files)
-    sealed_path.parent.mkdir(parents=True, exist_ok=True)
-    sealed_path.write_bytes(key_data)
-    os.chmod(str(sealed_path), 0o600)
+    # Try to save (may fail inside SGX enclave)
+    try:
+        sealed_path.parent.mkdir(parents=True, exist_ok=True)
+        sealed_path.write_bytes(key_data)
+        os.chmod(str(sealed_path), 0o600)
+        logger.info(f"Generated new enclave key pair, saved to {sealed_path}")
+    except (PermissionError, OSError) as e:
+        logger.warning(
+            f"Cannot save key to {sealed_path}: {e}. Using in-memory key only."
+        )
 
     public_pem = _serialize_public_key(private_key)
     logger.info(f"Generated new enclave key pair, saved to {sealed_path}")

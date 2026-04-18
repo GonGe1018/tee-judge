@@ -2,6 +2,7 @@
 
 This script is specified in the Gramine manifest argv and is a trusted_file.
 It reads task + host_results from stdin, runs verification, outputs result to stdout.
+The ECDSA key pair is loaded (not created) — daemon creates it on the host side.
 """
 
 import sys
