@@ -52,9 +52,11 @@ AUTH_HEADERS = {
 }
 
 # Get judge token (requires judge_key)
+import os
+
 res = requests.post(
     f"{BASE}/api/auth/judge-token",
-    json={"judge_key": "dev-only-judge-key"},
+    json={"judge_key": os.environ.get("TEE_JUDGE_JUDGE_KEY", "dev-only-judge-key")},
     headers=AUTH_HEADERS,
 )
 assert res.status_code == 200, f"Judge token failed: {res.text}"
