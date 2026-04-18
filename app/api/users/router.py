@@ -94,8 +94,12 @@ class RegisterKeyRequest(BaseModel):
 def register_enclave_key(
     req: RegisterKeyRequest, user: dict = Depends(get_current_user)
 ):
-    """Register enclave's ECDSA public key for verdict signature verification."""
-    # Validate it's a real PEM public key
+    """Register enclave's ECDSA public key. Judge role required. One-time only."""
+    # Must have judge role
+    if user.get("role") != "judge":
+        raise HTTPException(403, "Judge role required to register enclave key")
+
+    # Validate PEM
     try:
         from cryptography.hazmat.primitives.serialization import load_pem_public_key
 
@@ -104,6 +108,15 @@ def register_enclave_key(
         raise HTTPException(400, "Invalid PEM public key")
 
     with db_conn() as conn:
+        # Check if key already registered (one-time only)
+        existing = conn.execute(
+            "SELECT enclave_public_key FROM users WHERE id = ?", (user["user_id"],)
+        ).fetchone()
+        if existing and existing["enclave_public_key"]:
+            raise HTTPException(
+                409, "Enclave public key already registered. Cannot overwrite."
+            )
+
         conn.execute(
             "UPDATE users SET enclave_public_key = ? WHERE id = ?",
             (req.public_key, user["user_id"]),

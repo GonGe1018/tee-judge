@@ -223,22 +223,11 @@ async def report_result(
         ).fetchone()
         public_key_pem = user_row["enclave_public_key"] if user_row else None
 
-        # If public_key provided in request and not yet registered, auto-register
-        if not public_key_pem and req.public_key:
-            try:
-                from cryptography.hazmat.primitives.serialization import (
-                    load_pem_public_key,
-                )
-
-                load_pem_public_key(req.public_key.encode())
-                conn.execute(
-                    "UPDATE users SET enclave_public_key = ? WHERE id = ?",
-                    (req.public_key, user_id),
-                )
-                public_key_pem = req.public_key
-                logger.info(f"Auto-registered enclave public key for user #{user_id}")
-            except Exception:
-                pass
+        if not public_key_pem:
+            raise HTTPException(
+                403,
+                "No enclave public key registered. Register via /api/auth/register-enclave-key first.",
+            )
 
         # Verify attestation, ECDSA signature, and user_report_data binding
         attestation_verified, reason = _verify_attestation(

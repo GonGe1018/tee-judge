@@ -49,6 +49,18 @@ JUDGE_HEADERS = {
 }
 print(f"[0] Authenticated as testuser (user + judge tokens)")
 
+# Register enclave public key (judge token required, one-time)
+from client.enclave_keys import load_or_create_keypair
+
+_private_key, _public_key_pem = load_or_create_keypair()
+res = requests.post(
+    f"{BASE}/api/auth/register-enclave-key",
+    json={"public_key": _public_key_pem},
+    headers=JUDGE_HEADERS,
+)
+assert res.status_code in (200, 409), f"Key registration failed: {res.text}"
+print(f"[0] Enclave public key registered")
+
 
 def submit_and_judge(problem_id, code, expected_verdict):
     """Submit code, 2-phase judge it, verify verdict."""
