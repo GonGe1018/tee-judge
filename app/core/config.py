@@ -92,5 +92,17 @@ class Settings(BaseSettings):
         "extra": "ignore",
     }
 
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls,
+        init_settings,
+        env_settings,
+        dotenv_settings,
+        secrets_settings,
+    ):
+        # env vars > .env file (default pydantic-settings v2 behavior)
+        return init_settings, env_settings, dotenv_settings, secrets_settings
+
 
 settings = Settings()

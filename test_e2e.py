@@ -4,10 +4,18 @@ v4 architecture: enclave compiles+runs via libtcc, server determines verdict.
 Falls back to v3 (host compile + enclave sign) if libtcc unavailable.
 """
 
+import os
 import time
 import threading
 import requests
 import uvicorn
+
+# Set env vars BEFORE importing app modules (pydantic-settings reads at import time)
+os.environ.setdefault("TEE_JUDGE_ENV", "dev")
+os.environ.setdefault("TEE_JUDGE_ALLOW_MOCK", "1")
+
+# Import settings after env vars are set
+from app.core.config import settings
 
 
 # Start server in background thread
@@ -54,9 +62,12 @@ AUTH_HEADERS = {
 # Get judge token (requires judge_key)
 import os
 
+# Use actual judge key from settings (reads .env + env vars)
+_judge_key = settings.TEE_JUDGE_JUDGE_KEY or "dev-only-judge-key"
+
 res = requests.post(
     f"{BASE}/api/auth/judge-token",
-    json={"judge_key": os.environ.get("TEE_JUDGE_JUDGE_KEY", "dev-only-judge-key")},
+    json={"judge_key": _judge_key},
     headers=AUTH_HEADERS,
 )
 assert res.status_code == 200, f"Judge token failed: {res.text}"
