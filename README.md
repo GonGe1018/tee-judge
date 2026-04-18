@@ -1,22 +1,44 @@
 # TEE-Judge
 
-Intel SGX 기반 온라인 저지 시스템. 채점을 TEE(Trusted Execution Environment) 안에서 수행하여 채점 결과의 무결성을 하드웨어 수준에서 보장합니다.
+Intel SGX 기반 온라인 저지 시스템. 채점을 사용자 PC의 SGX Enclave 안에서 수행하고, DCAP Attestation + Azure MAA로 결과 무결성을 하드웨어 수준에서 보장합니다.
+
+KCC 2025 학부생 논문 대회 출품작.
 
 ## 아키텍처
 
 ```
-[브라우저]                         [사용자 PC (Ubuntu + Intel SGX)]
-  - 문제 보기                        - Judge Client (Docker)
-  - 코드 제출                        - SGX Enclave (채점 검증)
-  - 결과 확인                        - DCAP Attestation
-       |                                  |
-       |          HTTPS                   |  HTTPS
-       +---------> [서버] <---------------+
-                  (Docker)
-                  - 문제/테스트케이스 관리
-                  - Attestation 검증
-                  - 결과 저장/표시
+[브라우저]                    [사용자 PC (Ubuntu + Intel SGX)]
+  - 문제 보기                   - Judge Client (Python)
+  - 코드 제출                   - SGX Enclave (libtcc로 코드 컴파일+실행)
+  - 결과 확인                   - DCAP Attestation Quote 생성
+       |                              |
+       |         HTTPS                |  HTTPS
+       +-------> [서버 (Azure)] <-----+
+                 FastAPI + SQLite
+                 - 문제/테스트케이스 관리
+                 - Attestation 검증 (Azure MAA)
+                 - 서버 측 verdict 판정
+                 - 결과 저장/표시
 ```
+
+## 채점 흐름 (v4)
+
+```
+1. 사용자가 웹에서 C/C++ 코드 제출
+2. 서버가 DB에 저장 (PENDING), 테스트케이스 입력만 Judge Client에 전송
+3. Judge Client가 작업 폴링
+4. [SGX Enclave] libtcc로 코드 컴파일 + 각 테스트케이스 실행 (subprocess 없음)
+5. [SGX Enclave] 출력 해시 + ECDSA 서명 + DCAP Attestation Quote 생성
+6. Judge Client가 actual_outputs + 서명 + Quote를 서버에 전송
+7. 서버가 actual vs expected 비교 → verdict 판정
+8. 서버가 ECDSA 서명 + Azure MAA로 Quote 검증
+9. 브라우저에서 결과 표시 (AC/WA/TLE/CE + Attestation 상태)
+```
+
+**핵심 보안 특성:**
+- 서버가 expected_output을 클라이언트에 절대 전송하지 않음 → 정답 유출 차단
+- 코드 실행이 SGX Enclave 안에서만 이루어짐 → 호스트가 입출력 조작 불가
+- DCAP Attestation으로 "이 코드가 진짜 SGX에서 실행됐음"을 하드웨어 수준에서 증명
 
 ## 빠른 시작
 
@@ -25,22 +47,21 @@ Intel SGX 기반 온라인 저지 시스템. 채점을 TEE(Trusted Execution Env
 ```bash
 git clone https://github.com/GonGe1018/tee-judge.git
 cd tee-judge
+
+# 환경변수 설정 (.env 파일 생성)
+cat > .env << EOF
+TEE_JUDGE_SECRET=<랜덤 시크릿>
+TEE_JUDGE_JUDGE_KEY=<Judge Client 인증 키>
+TEE_JUDGE_MAA_ENDPOINT=https://<your-maa>.attest.azure.net
+TEE_JUDGE_CORS_ORIGINS=https://your-domain.com
+EOF
+
 docker compose up -d
 ```
 
 브라우저에서 `http://서버IP:8000` 접속.
-API 문서: `http://서버IP:8000/docs`
 
-### 서버 실행 (직접)
-
-```bash
-pip install -r server-requirements.txt
-uvicorn app.main:app --host 0.0.0.0 --port 8000
-```
-
-### Judge Client 설치 (Ubuntu)
-
-SGX 하드웨어가 있는 Ubuntu 머신에서:
+### Judge Client 설치 (Ubuntu + Intel SGX)
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/GonGe1018/tee-judge/main/install-client.sh | bash
@@ -49,75 +70,89 @@ curl -fsSL https://raw.githubusercontent.com/GonGe1018/tee-judge/main/install-cl
 설치 후 실행:
 
 ```bash
-# 로컬 서버에 연결
+TEE_JUDGE_SERVER=https://your-server.com \
+TEE_JUDGE_JUDGE_KEY=<Judge Client 인증 키> \
 tee-judge
-
-# 원격 서버에 연결
-TEE_JUDGE_SERVER=http://서버IP:8000 tee-judge
 ```
-
-SGX 하드웨어가 없으면 자동으로 mock 모드로 동작합니다.
-
-## 사용 방법
-
-1. 브라우저에서 서버에 접속
-2. 문제 목록에서 문제 선택
-3. C/C++ 코드를 작성하고 제출
-4. Judge Client가 자동으로 채점 (SGX Enclave에서 검증)
-5. 브라우저에서 결과 확인 (AC/WA/TLE/CE + Attestation 상태)
 
 ## 프로젝트 구조
 
 ```
 tee-judge/
-├── app/                    # 서버 애플리케이션
-│   ├── api/                # API 라우터
-│   │   ├── problems/       # 문제 관리 API
-│   │   ├── submissions/    # 제출/결과 API
-│   │   └── judge/          # Judge Client 통신 API
-│   ├── core/               # 설정, 스키마
-│   └── db/                 # 데이터베이스
-├── client/                 # Judge Client
-│   ├── daemon.py           # 자동 폴링 데몬
-│   └── enclave_judge.py    # 2-phase 채점 (host + enclave)
-├── frontend/               # 웹 UI
-├── data/                   # 테스트케이스
-├── deploy/                 # 배포 설정 (Gramine manifest)
-├── Dockerfile              # 서버 Docker 이미지
-├── Dockerfile.client       # Judge Client Docker 이미지
-├── docker-compose.yml      # 서버 배포
-└── install-client.sh       # Judge Client 설치 스크립트
+├── app/                        # 서버 (FastAPI)
+│   ├── api/
+│   │   ├── judge/
+│   │   │   ├── router.py       # Judge Client API (poll/report)
+│   │   │   └── dto.py          # JudgeTask, JudgeResultRequest
+│   │   ├── submissions/
+│   │   │   ├── router.py       # 제출/결과 API
+│   │   │   └── dto.py
+│   │   ├── users/
+│   │   │   ├── router.py       # 인증 API
+│   │   │   └── dto.py
+│   │   ├── problems/
+│   │   │   ├── router.py       # 문제 API
+│   │   │   └── dto.py
+│   │   └── ws/router.py        # WebSocket (실시간 결과 알림)
+│   ├── core/
+│   │   ├── config.py           # pydantic-settings 설정
+│   │   ├── auth.py             # JWT + bcrypt
+│   │   ├── quote_verify.py     # SGX Quote 파싱 + Azure MAA 검증
+│   │   └── security.py         # Rate limiting
+│   └── db/
+│       ├── database.py         # SQLite 연결 + 스키마
+│       ├── users_crud.py       # User CRUD
+│       ├── submissions_crud.py # Submission CRUD
+│       ├── problems_crud.py    # Problem/Testcase CRUD
+│       └── results_crud.py     # Result CRUD
+├── client/                     # Judge Client
+│   ├── daemon.py               # WebSocket + HTTP 폴링 데몬
+│   ├── enclave_judge.py        # Enclave 실행 + ECDSA 서명 + Attestation
+│   ├── enclave_entry.py        # Gramine enclave 진입점
+│   ├── enclave_keys.py         # ECDSA P-256 키쌍 관리
+│   └── tcc_runner.py           # libtcc ctypes 래퍼 (enclave 내 C 실행)
+├── frontend/                   # 웹 UI (HTML/CSS/JS)
+├── data/problems/              # 테스트케이스 (문제별 .in/.out 파일)
+├── deploy/gramine/             # Gramine manifest 템플릿
+├── docker-compose.yml
+├── Dockerfile
+├── install-client.sh
+└── test_e2e.py                 # E2E 테스트 (12개)
 ```
 
-## 채점 흐름
+## 보안 모델
 
-```
-1. 사용자가 웹에서 코드 제출
-2. 서버가 DB에 저장 (PENDING)
-3. Judge Client가 작업을 폴링
-4. [Phase 1 - Host] GCC로 컴파일 + 테스트케이스 실행
-5. [Phase 2 - SGX Enclave] 결과 검증 + DCAP Attestation Quote 생성 + 서명
-6. Judge Client가 서버에 결과 보고
-7. 서버가 Attestation 검증 후 결과 저장
-8. 브라우저에서 결과 표시
-```
+| 위협 | 방어 |
+|------|------|
+| 정답 유출 | 서버가 expected_output을 클라이언트에 전송하지 않음 |
+| 출력 위조 | SGX Enclave 안에서 libtcc로 실행 → 호스트 접근 불가 |
+| 서명 위조 | ECDSA P-256 + DCAP Attestation Quote 바인딩 |
+| 재생 공격 | 제출마다 fresh nonce 발급 |
+| Debug Enclave | Azure MAA에서 `x-ms-sgx-is-debuggable` 거부 |
+| 다른 Enclave | MRENCLAVE 검증 (선택적) |
 
-## 보안
+## 환경변수
 
-- DCAP Attestation: 실제 SGX 하드웨어에서 생성된 Quote로 enclave 무결성 검증
-- Nonce 바인딩: 매 세션마다 fresh nonce로 재생 공격 방지
-- 결과 서명: enclave 내부에서 verdict에 서명, 외부 위변조 탐지
-- Host/Enclave 분리: host는 정답(expected)에 접근 불가, enclave만 검증 수행
+| 변수 | 필수 | 설명 |
+|------|------|------|
+| `TEE_JUDGE_SECRET` | 프로덕션 필수 | JWT 서명 시크릿 |
+| `TEE_JUDGE_JUDGE_KEY` | 프로덕션 필수 | Judge Client 인증 키 |
+| `TEE_JUDGE_MAA_ENDPOINT` | SGX 필수 | Azure MAA 엔드포인트 |
+| `TEE_JUDGE_ENV` | 선택 | `dev` / `production` (기본: `production`) |
+| `TEE_JUDGE_ALLOW_MOCK` | 선택 | `true` — dev 환경에서만 mock attestation 허용 |
+| `TEE_JUDGE_MRENCLAVE` | 선택 | 기대 MRENCLAVE 값 (빈 값이면 검증 스킵) |
+| `TEE_JUDGE_CORS_ORIGINS` | 선택 | 허용 CORS origin (쉼표 구분) |
 
 ## 기술 스택
 
 | 컴포넌트 | 기술 |
 |---------|------|
-| 서버 | Python, FastAPI, SQLite |
-| 프론트엔드 | HTML, CSS, JavaScript |
-| Judge Client | Python, GCC/G++ |
+| 서버 | Python 3.11, FastAPI, SQLite |
+| 프론트엔드 | HTML, CSS, Vanilla JS |
+| Judge Client | Python 3.11, libtcc (C 코드 인메모리 컴파일+실행) |
 | SGX 런타임 | Gramine 1.8, Intel SGX DCAP |
-| 배포 | Docker, Docker Compose |
+| Attestation | Azure MAA (Microsoft Azure Attestation) |
+| 배포 | Docker, Docker Compose, Azure DCsv3 VM |
 
 ## 문제 목록
 
@@ -133,11 +168,13 @@ tee-judge/
 
 ### 서버
 - Docker 또는 Python 3.11+
+- Azure VM (SGX 검증 시 Azure MAA 필요)
 
 ### Judge Client
 - Ubuntu 20.04+ (x86_64)
-- Docker
-- Intel SGX 지원 CPU (선택 — 없으면 mock 모드)
+- Intel SGX 지원 CPU + DCAP 드라이버
+- Gramine 1.8
+- libtcc (`apt install tcc`)
 
 ## 라이선스
 
