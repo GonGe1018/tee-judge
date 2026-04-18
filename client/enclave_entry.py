@@ -1,7 +1,8 @@
 """Enclave entry point — runs inside SGX via Gramine.
 
 Reads task + host_results + private_key_pem from stdin.
-Signs verdict with the provided key (same key daemon registered with server).
+Hashes outputs and signs with the provided key (same key daemon registered with server).
+No verdict determination — server compares actual vs expected.
 No file-based key loading — key comes via stdin to avoid Gramine file issues.
 """
 
@@ -18,7 +19,7 @@ data = json.loads(sys.stdin.read())
 if "private_key_pem" in data:
     os.environ["_TEE_JUDGE_PRIVATE_KEY_PEM"] = data["private_key_pem"]
 
-from client.enclave_judge import enclave_verify_and_sign
+from client.enclave_judge import enclave_hash_and_sign
 
-r = enclave_verify_and_sign(data["task"], data["host_results"])
+r = enclave_hash_and_sign(data["task"], data["host_results"])
 print("ENCLAVE_RESULT:" + json.dumps(r))

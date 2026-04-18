@@ -1,10 +1,11 @@
-"""2-phase SGX Judge Client daemon — ECDSA keys + stdin/stdout (TOCTOU-safe).
+"""2-phase SGX Judge Client daemon — server-side verdict (v3).
 
-Security model (v2):
-- Enclave generates ECDSA key pair, private key sealed
-- Public key registered with server on startup
-- Data passed to enclave via stdin (not files) to prevent TOCTOU
-- Verdict signed with ECDSA, verified by server with registered public key
+Security model (v3):
+- Server NEVER sends expected_output to client
+- Phase 1 (host): compile + run → collect stdout outputs
+- Phase 2 (enclave): hash outputs + ECDSA sign + attestation quote
+- Server: compares actual vs expected, determines verdict
+- Enclave proves "these outputs came from this code" via attestation
 """
 
 import sys
@@ -19,7 +20,7 @@ import getpass
 PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_DIR)
 
-from client.enclave_judge import host_compile_and_run
+from client.enclave_judge import host_compile_and_run, enclave_hash_and_sign
 from client.enclave_keys import load_or_create_keypair
 import requests
 
@@ -136,7 +137,7 @@ def register_public_key(server: str, headers: dict, public_key_pem: str):
 
 
 def judge_in_sgx(task, hr):
-    """Run enclave verification inside SGX. Data + key passed via stdin."""
+    """Run enclave hash+sign inside SGX. Data + key passed via stdin."""
     # Load private key PEM to pass to enclave
     from client.enclave_keys import SEALED_KEY_PATH
     from pathlib import Path
@@ -157,9 +158,9 @@ def judge_in_sgx(task, hr):
         "import sys,os,json\n"
         f"sys.path.insert(0,{PROJECT_DIR!r})\n"
         f"os.chdir({PROJECT_DIR!r})\n"
-        "from client.enclave_judge import enclave_verify_and_sign\n"
+        "from client.enclave_judge import enclave_hash_and_sign\n"
         "data=json.loads(sys.stdin.read())\n"
-        "r=enclave_verify_and_sign(data['task'],data['host_results'])\n"
+        "r=enclave_hash_and_sign(data['task'],data['host_results'])\n"
         "print('ENCLAVE_RESULT:'+json.dumps(r))\n"
     )
 
@@ -196,10 +197,8 @@ def judge_in_sgx(task, hr):
 
 
 def judge_native(task, hr):
-    """Run verification natively (no SGX)."""
-    from client.enclave_judge import enclave_verify_and_sign
-
-    return enclave_verify_and_sign(task, hr)
+    """Run hash+sign natively (no SGX)."""
+    return enclave_hash_and_sign(task, hr)
 
 
 # --- Task Processing ---
@@ -228,25 +227,27 @@ def process_task(headers: dict):
     else:
         log.info(f"  Phase 1: {len(hr['outputs'])} tests executed")
 
-    # Phase 2: Enclave verify + sign (enclave_testcases has expected)
-    enclave_task = {**task, "testcases": task["enclave_testcases"]}
-    del enclave_task["enclave_testcases"]
-
+    # Phase 2: Enclave hash + sign (no expected_output needed)
     if SGX_ENABLED:
-        result = judge_in_sgx(enclave_task, hr)
+        result = judge_in_sgx(task, hr)
     else:
-        result = judge_native(enclave_task, hr)
+        result = judge_native(task, hr)
 
     if result:
         att = json.loads(result["attestation_quote"])
         log.info(
-            f"  Phase 2: {result['verdict']} ({result['test_passed']}/{result['test_total']}) "
+            f"  Phase 2: outputs_hash={result['outputs_hash'][:16]}... "
             f"[{att.get('sgx_mode', 'unknown')}]"
         )
-        requests.post(
-            f"{SERVER}/api/judge/report", json=result, headers=headers, timeout=10
+        resp = requests.post(
+            f"{SERVER}/api/judge/report", json=result, headers=headers, timeout=30
         )
-        log.info(f"  Reported: {result['verdict']}")
+        server_verdict = (
+            resp.json().get("verdict", "?")
+            if resp.status_code == 200
+            else f"ERROR {resp.status_code}"
+        )
+        log.info(f"  Server verdict: {server_verdict}")
     else:
         log.error(f"  Enclave returned no result for #{sid}")
 

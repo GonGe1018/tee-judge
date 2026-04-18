@@ -1,11 +1,12 @@
-"""Two-phase judge: compile+run outside enclave, verify+sign inside enclave.
+"""Two-phase judge: compile+run outside enclave, hash+sign inside enclave.
 
-Security model (v2):
-- Enclave generates its own ECDSA key pair (private key sealed, public key exported)
-- Verdict is signed with enclave's private key (not a shared HMAC key)
-- user_report_data = SHA256(sign_payload) — binds verdict to SGX quote
-- Server verifies signature with registered public key
-- ENCLAVE_KEY environment variable is NO LONGER used for signing
+Security model (v3 — server-side comparison):
+- Server NEVER sends expected_output to client (prevents answer leakage)
+- Phase 1 (host): compile + run → collect raw stdout outputs
+- Phase 2 (enclave): hash outputs + sign with ECDSA + attestation quote
+- Server: compares actual_outputs vs expected, determines verdict
+- Enclave proves "these outputs came from this code" via attestation
+- sign_payload = {sid}:{pid}:{nonce}:{code_hash}:{outputs_hash}
 """
 
 import sys
@@ -105,7 +106,7 @@ def host_compile_and_run(task):
                     outputs.append(
                         {
                             "order": tc["order"],
-                            "actual": "",
+                            "output": "",
                             "time_ms": elapsed_ms,
                             "status": "RE",
                         }
@@ -114,7 +115,7 @@ def host_compile_and_run(task):
                     outputs.append(
                         {
                             "order": tc["order"],
-                            "actual": "",
+                            "output": "",
                             "time_ms": elapsed_ms,
                             "status": "TLE",
                         }
@@ -123,7 +124,7 @@ def host_compile_and_run(task):
                     outputs.append(
                         {
                             "order": tc["order"],
-                            "actual": r.stdout.strip()[:MAX_OUTPUT_BYTES],
+                            "output": r.stdout.strip()[:MAX_OUTPUT_BYTES],
                             "time_ms": elapsed_ms,
                             "status": "OK",
                         }
@@ -132,7 +133,7 @@ def host_compile_and_run(task):
                 outputs.append(
                     {
                         "order": tc["order"],
-                        "actual": "",
+                        "output": "",
                         "time_ms": task["time_limit_ms"],
                         "status": "TLE",
                     }
@@ -141,7 +142,7 @@ def host_compile_and_run(task):
                 outputs.append(
                     {
                         "order": tc["order"],
-                        "actual": "",
+                        "output": "",
                         "time_ms": 0,
                         "status": "RE",
                     }
@@ -151,11 +152,29 @@ def host_compile_and_run(task):
 
 
 # Phase 2: Enclave-side (inside SGX)
-# Compare outputs with expected, generate verdict + ECDSA signature
+# Hash outputs and sign — NO comparison, NO verdict determination
 
 
-def enclave_verify_and_sign(task, host_results):
-    """Verify results and sign verdict inside enclave using ECDSA key pair."""
+def compute_outputs_hash(outputs: list[dict]) -> str:
+    """Compute canonical hash of outputs for signing.
+
+    Canonical form: sorted by order, each entry = "order:status:output".
+    Empty outputs (CE) → SHA256("CE").
+    """
+    if not outputs:
+        return hashlib.sha256(b"CE").hexdigest()
+    canonical_parts = []
+    for o in sorted(outputs, key=lambda x: x["order"]):
+        canonical_parts.append(f"{o['order']}:{o['status']}:{o['output']}")
+    canonical = "\n".join(canonical_parts)
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def enclave_hash_and_sign(task, host_results):
+    """Hash outputs and sign inside enclave. Does NOT determine verdict.
+
+    Server will compare actual outputs vs expected to determine verdict.
+    """
 
     # Load key: prefer stdin-injected key (via env), fallback to file
     injected_pem = os.environ.get("_TEE_JUDGE_PRIVATE_KEY_PEM", "")
@@ -170,40 +189,23 @@ def enclave_verify_and_sign(task, host_results):
         private_key, public_key_pem = load_or_create_keypair()
 
     if host_results["status"] == "CE":
-        verdict = "CE"
-        test_passed = 0
-        test_total = len(task["testcases"])
+        outputs = []
+        outputs_hash = compute_outputs_hash([])
         max_time = 0
     else:
-        test_passed = 0
-        test_total = len(task["testcases"])
-        max_time = 0
-        verdict = "AC"
+        outputs = host_results["outputs"]
+        outputs_hash = compute_outputs_hash(outputs)
+        max_time = max((o["time_ms"] for o in outputs), default=0)
 
-        for output, tc in zip(host_results["outputs"], task["testcases"]):
-            max_time = max(max_time, output["time_ms"])
-
-            if output["status"] == "TLE":
-                if verdict == "AC":
-                    verdict = "TLE"
-            elif output["status"] == "RE":
-                if verdict == "AC":
-                    verdict = "RE"
-            elif output["actual"] == tc["expected"].strip():
-                test_passed += 1
-            else:
-                if verdict == "AC":
-                    verdict = "WA"
-
-    # Build sign payload (includes code hash to prevent code swap)
+    # Build sign payload (no verdict — server decides)
     nonce = task["nonce"]
     code_hash = hashlib.sha256(task.get("code", "").encode()).hexdigest()[:16]
-    sign_payload = f"{task['submission_id']}:{task['problem_id']}:{verdict}:{test_passed}:{test_total}:{nonce}:{code_hash}"
+    sign_payload = f"{task['submission_id']}:{task['problem_id']}:{nonce}:{code_hash}:{outputs_hash}"
 
-    # Compute verdict hash for user_report_data binding
-    verdict_hash = hashlib.sha256(sign_payload.encode()).digest()
+    # Compute payload hash for user_report_data binding
+    payload_hash = hashlib.sha256(sign_payload.encode()).digest()
 
-    # Sign with ECDSA private key (not HMAC)
+    # Sign with ECDSA private key
     signature = sign_verdict(private_key, sign_payload)
 
     # Try real SGX attestation via /dev/attestation
@@ -215,8 +217,8 @@ def enclave_verify_and_sign(task, host_results):
         attestation_dir = "/dev/attestation"
 
         if os.path.exists(attestation_dir):
-            # user_report_data = verdict_hash (32 bytes) + padding
-            report_data = verdict_hash + b"\x00" * (64 - len(verdict_hash))
+            # user_report_data = payload_hash (32 bytes) + padding
+            report_data = payload_hash + b"\x00" * (64 - len(payload_hash))
 
             with open(f"{attestation_dir}/user_report_data", "wb") as f:
                 f.write(report_data)
@@ -237,7 +239,7 @@ def enclave_verify_and_sign(task, host_results):
                     "quote_b64": binascii.b2a_base64(quote_bytes).decode(),
                     "mrenclave": mrenclave,
                     "mrsigner": mrsigner,
-                    "user_report_data": binascii.hexlify(verdict_hash).decode(),
+                    "user_report_data": binascii.hexlify(payload_hash).decode(),
                     "nonce": nonce,
                     "timestamp": time.time(),
                     "sgx_mode": "hardware",
@@ -248,6 +250,8 @@ def enclave_verify_and_sign(task, host_results):
 
     except Exception:
         # Fallback to mock attestation (dev only, default OFF)
+        import binascii
+
         allow_mock = os.environ.get("TEE_JUDGE_ALLOW_MOCK", "0") == "1"
         if not allow_mock:
             raise RuntimeError(
@@ -260,9 +264,7 @@ def enclave_verify_and_sign(task, host_results):
                 "type": "mock",
                 "mrenclave": mrenclave,
                 "mrsigner": hashlib.sha256(b"tee-judge-signer-mock").hexdigest(),
-                "user_report_data": binascii.hexlify(verdict_hash).decode()
-                if "binascii" in dir()
-                else verdict_hash.hex(),
+                "user_report_data": binascii.hexlify(payload_hash).decode(),
                 "nonce": nonce,
                 "timestamp": time.time(),
                 "sgx_mode": "mock",
@@ -271,14 +273,12 @@ def enclave_verify_and_sign(task, host_results):
 
     return {
         "submission_id": task["submission_id"],
-        "verdict": verdict,
+        "actual_outputs": outputs,
+        "outputs_hash": outputs_hash,
         "time_ms": max_time,
         "memory_kb": 0,
-        "test_passed": test_passed,
-        "test_total": test_total,
         "attestation_quote": attestation_quote,
         "verdict_signature": signature,
-        "public_key": public_key_pem,
         "nonce": nonce,
     }
 
@@ -290,9 +290,6 @@ if __name__ == "__main__":
     if host_results_raw:
         host_results = json.loads(host_results_raw)
     else:
-        # Read from stdin as second JSON object
-        import select
-
         host_results = {}
-    result = enclave_verify_and_sign(task, host_results)
+    result = enclave_hash_and_sign(task, host_results)
     print(json.dumps(result))

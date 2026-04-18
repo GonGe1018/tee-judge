@@ -1,6 +1,6 @@
 """Server-side re-verification of judge results.
 
-For AC verdicts: full verification (all testcases).
+For AC verdicts: random K testcases (K = max(10, ceil(total * 0.3))).
 For other verdicts: random K testcases.
 If mismatch detected, the result is rejected.
 """
@@ -11,16 +11,32 @@ import subprocess
 import tempfile
 import time
 import logging
+import math
 from pathlib import Path
 
 logger = logging.getLogger("tee-judge")
 
-# Number of testcases to re-verify (configurable)
-REVERIFY_COUNT = int(os.environ.get("TEE_JUDGE_REVERIFY_COUNT", "3"))
+# Minimum number of testcases to re-verify
+REVERIFY_MIN = int(os.environ.get("TEE_JUDGE_REVERIFY_MIN", "10"))
+
+# Percentage of testcases to re-verify (0.0 - 1.0)
+REVERIFY_RATIO = float(os.environ.get("TEE_JUDGE_REVERIFY_RATIO", "0.3"))
 
 # Minimum expected execution time per testcase (ms) — if total is way too fast, suspicious
 # Set to 0 to disable (simple problems like A+B run in <1ms)
 MIN_EXPECTED_TIME_PER_TEST_MS = int(os.environ.get("TEE_JUDGE_MIN_TIME_PER_TEST", "0"))
+
+
+def _compute_reverify_count(total: int) -> int:
+    """Compute K = max(REVERIFY_MIN, ceil(total * REVERIFY_RATIO)).
+
+    Examples:
+      30 testcases  → max(10, 9)  = 10
+      50 testcases  → max(10, 15) = 15
+      100 testcases → max(10, 30) = 30
+      200 testcases → max(10, 60) = 60
+    """
+    return min(total, max(REVERIFY_MIN, math.ceil(total * REVERIFY_RATIO)))
 
 
 def reverify_submission(
@@ -48,12 +64,9 @@ def reverify_submission(
     if not testcases:
         return True, "No testcases to verify"
 
-    # AC: full verification. Others: random K.
-    if reported_verdict == "AC":
-        selected = testcases
-    else:
-        k = min(REVERIFY_COUNT, len(testcases))
-        selected = random.sample(testcases, k)
+    # Ratio-based K: max(10, ceil(total * 0.3)), capped at total
+    k = _compute_reverify_count(len(testcases))
+    selected = random.sample(testcases, k)
 
     # Compile
     with tempfile.TemporaryDirectory(prefix="tee-reverify-") as tmpdir:

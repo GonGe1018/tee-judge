@@ -1,4 +1,7 @@
-"""End-to-end test: submit code for all problems, judge, check results."""
+"""End-to-end test: submit code for all problems, judge, check results.
+
+v3 architecture: server determines verdict, client sends outputs + hash.
+"""
 
 import time
 import threading
@@ -16,7 +19,7 @@ server_thread.start()
 time.sleep(2)
 
 BASE = "http://127.0.0.1:18080"
-from client.enclave_judge import host_compile_and_run, enclave_verify_and_sign
+from client.enclave_judge import host_compile_and_run, enclave_hash_and_sign
 
 # Register a test user and get token
 res = requests.post(
@@ -80,16 +83,18 @@ def submit_and_judge(problem_id, code, expected_verdict):
     task = res.json()["task"]
     assert task is not None
 
-    # Phase 1: Host compile + run (testcases has input only)
+    # Phase 1: Host compile + run
     hr = host_compile_and_run(task)
 
-    # Phase 2: Enclave verify + sign (enclave_testcases has expected)
-    enclave_task = {**task, "testcases": task["enclave_testcases"]}
-    del enclave_task["enclave_testcases"]
-    result = enclave_verify_and_sign(enclave_task, hr)
+    # Phase 2: Enclave hash + sign (no expected_output needed)
+    result = enclave_hash_and_sign(task, hr)
 
-    requests.post(f"{BASE}/api/judge/report", json=result, headers=JUDGE_HEADERS)
+    # Report to server — server determines verdict
+    resp = requests.post(f"{BASE}/api/judge/report", json=result, headers=JUDGE_HEADERS)
+    assert resp.status_code == 200, f"Report failed: {resp.status_code} {resp.text}"
+    server_result = resp.json()
 
+    # Also check via result API
     res = requests.get(
         f"{BASE}/api/result/{sub['submission_id']}", headers=AUTH_HEADERS
     )

@@ -132,25 +132,17 @@ class JudgeTask(BaseModel):
     time_limit_ms: int
     memory_limit_kb: int
     testcases: list[dict]
-    enclave_testcases: list[dict]
     nonce: str
 
 
 class JudgeResultRequest(BaseModel):
     submission_id: int
-    verdict: str
+    actual_outputs: list[
+        dict
+    ]  # [{"order": 1, "output": "3", "time_ms": 5, "status": "OK"}, ...]
+    outputs_hash: str  # SHA256 of canonical outputs (enclave-signed)
     time_ms: int
     memory_kb: int
-    test_passed: int
-    test_total: int
     attestation_quote: Optional[str] = None
     verdict_signature: Optional[str] = None
-    public_key: Optional[str] = None  # Enclave ECDSA public key (PEM)
     nonce: str
-
-    @field_validator("verdict")
-    @classmethod
-    def validate_verdict(cls, v):
-        if v not in VALID_VERDICTS:
-            raise ValueError(f"verdict must be one of {VALID_VERDICTS}")
-        return v
