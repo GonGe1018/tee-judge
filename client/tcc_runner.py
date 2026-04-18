@@ -116,78 +116,96 @@ def run_with_input(func_addr: int, input_data: str, time_limit_ms: int = 2000) -
     """Run compiled function with given stdin input, capture stdout.
 
     Returns {"output": str, "time_ms": int, "status": "OK"|"RE"|"TLE"}.
-    Uses SIGALRM for time limit enforcement (Linux only).
+    Uses fork() for isolation + time limit enforcement.
+    Child process runs the code, parent waits with timeout.
     """
-    import signal
-
     libc = _get_libc()
 
     input_bytes = input_data.encode()
     if not input_bytes.endswith(b"\n"):
         input_bytes += b"\n"
 
-    # Create pipes for stdin/stdout redirection
-    stdin_read, stdin_write = os.pipe()
-    stdout_read, stdout_write = os.pipe()
-
-    os.write(stdin_write, input_bytes)
-    os.close(stdin_write)
-
-    # Save original fds
-    orig_stdin = os.dup(0)
-    orig_stdout = os.dup(1)
-
-    # Redirect
-    os.dup2(stdin_read, 0)
-    os.dup2(stdout_write, 1)
-
-    FUNC_TYPE = ctypes.CFUNCTYPE(ctypes.c_int)
-    func = FUNC_TYPE(func_addr)
-
-    # Set alarm for time limit
-    timed_out = False
-
-    def _alarm_handler(signum, frame):
-        nonlocal timed_out
-        timed_out = True
-        raise TimeoutError("TLE")
-
-    old_handler = signal.signal(signal.SIGALRM, _alarm_handler)
-    # Set alarm with 1 second buffer over time limit
-    alarm_seconds = max(1, (time_limit_ms // 1000) + 1)
-    signal.alarm(alarm_seconds)
+    # Create pipe for child→parent output communication
+    out_read, out_write = os.pipe()
 
     start = time.perf_counter()
-    try:
-        func()
+    pid = os.fork()
+
+    if pid == 0:
+        # Child process: run the code
+        os.close(out_read)
+        try:
+            # Redirect stdin from input
+            stdin_read, stdin_write = os.pipe()
+            os.write(stdin_write, input_bytes)
+            os.close(stdin_write)
+
+            # Redirect stdout to pipe
+            os.dup2(stdin_read, 0)
+            os.dup2(out_write, 1)
+            os.close(stdin_read)
+            os.close(out_write)
+
+            FUNC_TYPE = ctypes.CFUNCTYPE(ctypes.c_int)
+            func = FUNC_TYPE(func_addr)
+            func()
+
+            libc.fflush(None)
+            os._exit(0)
+        except Exception:
+            os._exit(1)
+    else:
+        # Parent process: wait with timeout
+        os.close(out_write)
+        import select
+
+        deadline = time.perf_counter() + (time_limit_ms / 1000.0) + 0.5
+        status_code = None
+
+        while True:
+            remaining = deadline - time.perf_counter()
+            if remaining <= 0:
+                # Timeout — kill child
+                import signal
+
+                os.kill(pid, signal.SIGKILL)
+                os.waitpid(pid, 0)
+                elapsed_ms = time_limit_ms
+                os.close(out_read)
+                return {"output": "", "time_ms": elapsed_ms, "status": "TLE"}
+
+            # Check if child finished
+            result = os.waitpid(pid, os.WNOHANG)
+            if result[0] != 0:
+                status_code = result[1]
+                break
+            time.sleep(0.01)
+
         elapsed_ms = int((time.perf_counter() - start) * 1000)
-        status = "TLE" if elapsed_ms > time_limit_ms else "OK"
-    except TimeoutError:
-        elapsed_ms = time_limit_ms
-        status = "TLE"
-    except Exception:
-        elapsed_ms = int((time.perf_counter() - start) * 1000)
-        status = "RE"
-    finally:
-        signal.alarm(0)
-        signal.signal(signal.SIGALRM, old_handler)
 
-    # Flush C stdout buffer
-    libc.fflush(None)
+        # Read output from pipe
+        output = b""
+        while True:
+            ready, _, _ = select.select([out_read], [], [], 0)
+            if ready:
+                chunk = os.read(out_read, MAX_OUTPUT_BYTES)
+                if not chunk:
+                    break
+                output += chunk
+            else:
+                break
+        os.close(out_read)
 
-    # Restore fds
-    os.dup2(orig_stdin, 0)
-    os.dup2(orig_stdout, 1)
-    os.close(stdin_read)
-    os.close(stdout_write)
-    os.close(orig_stdin)
-    os.close(orig_stdout)
+        output_str = output.decode(errors="replace").strip()
 
-    # Read output
-    output = os.read(stdout_read, MAX_OUTPUT_BYTES).decode(errors="replace").strip()
-    os.close(stdout_read)
-
-    return {"output": output, "time_ms": elapsed_ms, "status": status}
+        if os.WIFSIGNALED(status_code):
+            return {"output": "", "time_ms": elapsed_ms, "status": "RE"}
+        elif os.WEXITSTATUS(status_code) != 0:
+            return {"output": "", "time_ms": elapsed_ms, "status": "RE"}
+        elif elapsed_ms > time_limit_ms:
+            return {"output": "", "time_ms": elapsed_ms, "status": "TLE"}
+        else:
+            return {"output": output_str, "time_ms": elapsed_ms, "status": "OK"}
 
 
 def compile_and_run_all(
