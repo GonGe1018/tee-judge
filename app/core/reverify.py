@@ -19,7 +19,8 @@ logger = logging.getLogger("tee-judge")
 REVERIFY_COUNT = int(os.environ.get("TEE_JUDGE_REVERIFY_COUNT", "3"))
 
 # Minimum expected execution time per testcase (ms) — if total is way too fast, suspicious
-MIN_EXPECTED_TIME_PER_TEST_MS = int(os.environ.get("TEE_JUDGE_MIN_TIME_PER_TEST", "1"))
+# Set to 0 to disable (simple problems like A+B run in <1ms)
+MIN_EXPECTED_TIME_PER_TEST_MS = int(os.environ.get("TEE_JUDGE_MIN_TIME_PER_TEST", "0"))
 
 
 def reverify_submission(
