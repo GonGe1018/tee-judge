@@ -33,6 +33,7 @@ async def submit_code(req: SubmitRequest, user: dict = Depends(get_current_user)
         submission_id = submissions_crud.create_submission(
             conn, user["user_id"], req.problem_id, req.language, req.code, code_hash
         )
+        conn.commit()
 
     await judge_manager.notify(
         user["user_id"],
