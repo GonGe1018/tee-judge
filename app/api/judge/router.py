@@ -190,8 +190,8 @@ def poll_task(user: dict = Depends(require_judge_role)):
         code=sub["code"],
         time_limit_ms=problem["time_limit_ms"] if problem else 2000,
         memory_limit_kb=problem["memory_limit_kb"] if problem else 262144,
-        testcases=tc_plain,  # always include plaintext (fallback for non-SGX)
-        encrypted_testcases=encrypted_testcases,  # None if no key registered
+        testcases=[],  # never send plaintext testcases to client
+        encrypted_testcases=encrypted_testcases,
         nonce=nonce,
     )
 
