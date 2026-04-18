@@ -2,8 +2,6 @@
 
 Intel SGX 기반 온라인 저지 시스템. 채점을 사용자 PC의 SGX Enclave 안에서 수행하고, DCAP Attestation + Azure MAA로 결과 무결성을 하드웨어 수준에서 보장합니다.
 
-KCC 2025 학부생 논문 대회 출품작.
-
 ## 아키텍처
 
 ```
