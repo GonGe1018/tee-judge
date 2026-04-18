@@ -29,18 +29,37 @@ time.sleep(2)
 
 BASE = "http://127.0.0.1:18080"
 
-# Detect libtcc availability
+# Detect execution mode
+import platform
+
+SGX_AVAILABLE = os.path.exists("/dev/sgx_enclave")
+USE_SGX_BRIDGE = False
 USE_LIBTCC = False
-try:
-    from client.tcc_runner import compile_and_run_all
-    from client.enclave_judge import enclave_compile_run_and_sign
+sgx_bridge = None
 
-    USE_LIBTCC = True
-    print("[0] libtcc available — using v4 (full enclave execution)")
-except (ImportError, OSError):
-    from client.enclave_judge import host_compile_and_run, enclave_hash_and_sign
+if SGX_AVAILABLE:
+    try:
+        from client.daemon import EnclaveBridge
 
-    print("[0] libtcc unavailable — using v3 fallback (host compile + enclave sign)")
+        sgx_bridge = EnclaveBridge()
+        USE_SGX_BRIDGE = True
+        print("[0] SGX available — using long-running enclave (RA-TLS mode)")
+    except Exception as e:
+        print(f"[0] SGX bridge failed ({e}), falling back to libtcc")
+
+if not USE_SGX_BRIDGE:
+    try:
+        from client.tcc_runner import compile_and_run_all
+        from client.enclave_judge import enclave_compile_run_and_sign
+
+        USE_LIBTCC = True
+        print("[0] libtcc available — using v4 native (no SGX)")
+    except (ImportError, OSError):
+        from client.enclave_judge import host_compile_and_run, enclave_hash_and_sign
+
+        print(
+            "[0] libtcc unavailable — using v3 fallback (host compile + enclave sign)"
+        )
 
 # Register a test user and get token
 res = requests.post(
@@ -79,16 +98,22 @@ JUDGE_HEADERS = {
 print(f"[0] Authenticated as testuser (user + judge tokens)")
 
 # Register enclave public key (judge token required, one-time)
-from client.enclave_keys import load_or_create_keypair
+if USE_SGX_BRIDGE:
+    # SGX mode: use RA-TLS public key from long-running enclave
+    _public_key_pem = sgx_bridge.public_key_pem
+else:
+    # Non-SGX mode: use ECDSA key
+    from client.enclave_keys import load_or_create_keypair
 
-_private_key, _public_key_pem = load_or_create_keypair()
+    _private_key, _public_key_pem = load_or_create_keypair()
+
 res = requests.post(
     f"{BASE}/api/auth/register-enclave-key",
     json={"public_key": _public_key_pem},
     headers=JUDGE_HEADERS,
 )
 assert res.status_code in (200, 409), f"Key registration failed: {res.text}"
-print(f"[0] Enclave public key registered")
+print(f"[0] Enclave public key registered ({'RA-TLS' if USE_SGX_BRIDGE else 'ECDSA'})")
 
 
 def submit_and_judge(problem_id, code, expected_verdict):
@@ -110,8 +135,11 @@ def submit_and_judge(problem_id, code, expected_verdict):
     assert task is not None
 
     # Phase: compile + run + sign
-    if USE_LIBTCC:
-        # v4: full enclave execution
+    if USE_SGX_BRIDGE:
+        # v4 SGX: use long-running enclave via EnclaveBridge
+        result = sgx_bridge.submit_task(task, timeout=120)
+    elif USE_LIBTCC:
+        # v4 native: full enclave execution (non-SGX)
         result = enclave_compile_run_and_sign(task)
     else:
         # v3 fallback: host compile + enclave sign
