@@ -9,6 +9,8 @@ Security model (v3 — server-side comparison):
 - sign_payload = {sid}:{pid}:{nonce}:{code_hash}:{outputs_hash}
 """
 
+from __future__ import annotations
+
 import sys
 import os
 import json

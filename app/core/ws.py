@@ -1,5 +1,7 @@
 """WebSocket connection managers for Judge Client and Browser notifications."""
 
+from __future__ import annotations
+
 import logging
 from fastapi import WebSocket
 

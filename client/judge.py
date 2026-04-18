@@ -8,6 +8,8 @@ and reports results back. In --mock mode, simulates SGX attestation.
 In real SGX mode (future), runs inside an SGX enclave on Linux.
 """
 
+from __future__ import annotations
+
 import argparse
 import hashlib
 import hmac

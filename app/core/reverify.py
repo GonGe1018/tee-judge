@@ -5,6 +5,8 @@ For other verdicts: random K testcases.
 If mismatch detected, the result is rejected.
 """
 
+from __future__ import annotations
+
 import os
 import random
 import subprocess

@@ -1,5 +1,7 @@
 """Pydantic schemas for the API."""
 
+from __future__ import annotations
+
 from pydantic import BaseModel, field_validator
 from typing import Optional
 

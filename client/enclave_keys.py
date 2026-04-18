@@ -8,6 +8,8 @@ In non-SGX mode:
   - Key pair stored in a local file (dev only)
 """
 
+from __future__ import annotations
+
 import os
 import json
 import hashlib

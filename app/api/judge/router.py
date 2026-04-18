@@ -7,6 +7,8 @@ Security model:
 - sign_payload = {sid}:{pid}:{nonce}:{code_hash}:{outputs_hash}
 """
 
+from __future__ import annotations
+
 import os
 import json
 import hmac

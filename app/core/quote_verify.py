@@ -14,6 +14,8 @@ SGX Quote v3 layout:
   Offset 436+:    signature_data (variable)
 """
 
+from __future__ import annotations
+
 import os
 import json
 import base64
