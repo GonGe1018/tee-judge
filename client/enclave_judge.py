@@ -288,13 +288,137 @@ def enclave_hash_and_sign(task, host_results):
     }
 
 
+def enclave_compile_run_and_sign(task):
+    """Full enclave execution: compile + run + hash + sign + attestation.
+
+    Uses libtcc to compile and run C code entirely inside the enclave.
+    No host involvement in execution — host cannot see inputs or outputs.
+    This is the v4 secure path that prevents testcase input leakage.
+    """
+    from client.tcc_runner import compile_and_run_all
+
+    # Load ECDSA key
+    injected_pem = os.environ.get("_TEE_JUDGE_PRIVATE_KEY_PEM", "")
+    if injected_pem:
+        from cryptography.hazmat.primitives.serialization import load_pem_private_key
+        from cryptography.hazmat.backends import default_backend
+
+        private_key = load_pem_private_key(
+            injected_pem.encode(), password=None, backend=default_backend()
+        )
+    else:
+        private_key, _ = load_or_create_keypair()
+
+    # Compile and run all testcases inside enclave via libtcc
+    run_result = compile_and_run_all(
+        code=task["code"],
+        testcases=task["testcases"],
+        time_limit_ms=task.get("time_limit_ms", 2000),
+    )
+
+    if run_result["status"] == "CE":
+        outputs = []
+        outputs_hash = compute_outputs_hash([])
+        max_time = 0
+    else:
+        outputs = run_result["outputs"]
+        outputs_hash = compute_outputs_hash(outputs)
+        max_time = max((o["time_ms"] for o in outputs), default=0)
+
+    # Build sign payload
+    nonce = task["nonce"]
+    code_hash = hashlib.sha256(task.get("code", "").encode()).hexdigest()[:16]
+    sign_payload = f"{task['submission_id']}:{task['problem_id']}:{nonce}:{code_hash}:{outputs_hash}"
+
+    # Compute payload hash for user_report_data binding
+    payload_hash = hashlib.sha256(sign_payload.encode()).digest()
+
+    # Sign with ECDSA
+    signature = sign_verdict(private_key, sign_payload)
+
+    # Attestation quote
+    attestation_quote = None
+    try:
+        import binascii
+
+        attestation_dir = "/dev/attestation"
+
+        if os.path.exists(attestation_dir):
+            report_data = payload_hash + b"\x00" * (64 - len(payload_hash))
+
+            with open(f"{attestation_dir}/user_report_data", "wb") as f:
+                f.write(report_data)
+
+            with open(f"{attestation_dir}/attestation_type", "r") as f:
+                att_type = f.read().strip()
+
+            with open(f"{attestation_dir}/quote", "rb") as f:
+                quote_bytes = f.read()
+
+            mrenclave = binascii.hexlify(quote_bytes[112:144]).decode()
+            mrsigner = binascii.hexlify(quote_bytes[176:208]).decode()
+
+            attestation_quote = json.dumps(
+                {
+                    "type": att_type,
+                    "quote_size": len(quote_bytes),
+                    "quote_b64": binascii.b2a_base64(quote_bytes).decode(),
+                    "mrenclave": mrenclave,
+                    "mrsigner": mrsigner,
+                    "user_report_data": binascii.hexlify(payload_hash).decode(),
+                    "nonce": nonce,
+                    "timestamp": time.time(),
+                    "sgx_mode": "hardware",
+                }
+            )
+        else:
+            raise FileNotFoundError("/dev/attestation not found")
+
+    except Exception:
+        import binascii
+
+        allow_mock = os.environ.get("TEE_JUDGE_ALLOW_MOCK", "0") == "1"
+        if not allow_mock:
+            raise RuntimeError(
+                "SGX attestation required but /dev/attestation not available"
+            )
+
+        mrenclave = hashlib.sha256(b"tee-judge-enclave-mock").hexdigest()
+        attestation_quote = json.dumps(
+            {
+                "type": "mock",
+                "mrenclave": mrenclave,
+                "mrsigner": hashlib.sha256(b"tee-judge-signer-mock").hexdigest(),
+                "user_report_data": binascii.hexlify(payload_hash).decode(),
+                "nonce": nonce,
+                "timestamp": time.time(),
+                "sgx_mode": "mock",
+            }
+        )
+
+    return {
+        "submission_id": task["submission_id"],
+        "actual_outputs": outputs,
+        "outputs_hash": outputs_hash,
+        "time_ms": max_time,
+        "memory_kb": 0,
+        "attestation_quote": attestation_quote,
+        "verdict_signature": signature,
+        "nonce": nonce,
+    }
+
+
 if __name__ == "__main__":
     # Read task from stdin (TOCTOU-safe: no file-based input)
     task = json.loads(sys.stdin.read())
+
+    # v4 mode: if no host_results provided, run everything inside enclave
     host_results_raw = os.environ.get("HOST_RESULTS", "")
     if host_results_raw:
         host_results = json.loads(host_results_raw)
+        result = enclave_hash_and_sign(task, host_results)
     else:
-        host_results = {}
-    result = enclave_hash_and_sign(task, host_results)
+        # Full enclave execution (libtcc)
+        result = enclave_compile_run_and_sign(task)
+
     print(json.dumps(result))

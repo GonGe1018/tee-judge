@@ -1,6 +1,7 @@
 """End-to-end test: submit code for all problems, judge, check results.
 
-v3 architecture: server determines verdict, client sends outputs + hash.
+v4 architecture: enclave compiles+runs via libtcc, server determines verdict.
+Falls back to v3 (host compile + enclave sign) if libtcc unavailable.
 """
 
 import time
@@ -19,7 +20,19 @@ server_thread.start()
 time.sleep(2)
 
 BASE = "http://127.0.0.1:18080"
-from client.enclave_judge import host_compile_and_run, enclave_hash_and_sign
+
+# Detect libtcc availability
+USE_LIBTCC = False
+try:
+    from client.tcc_runner import compile_and_run_all
+    from client.enclave_judge import enclave_compile_run_and_sign
+
+    USE_LIBTCC = True
+    print("[0] libtcc available — using v4 (full enclave execution)")
+except (ImportError, OSError):
+    from client.enclave_judge import host_compile_and_run, enclave_hash_and_sign
+
+    print("[0] libtcc unavailable — using v3 fallback (host compile + enclave sign)")
 
 # Register a test user and get token
 res = requests.post(
@@ -83,11 +96,14 @@ def submit_and_judge(problem_id, code, expected_verdict):
     task = res.json()["task"]
     assert task is not None
 
-    # Phase 1: Host compile + run
-    hr = host_compile_and_run(task)
-
-    # Phase 2: Enclave hash + sign (no expected_output needed)
-    result = enclave_hash_and_sign(task, hr)
+    # Phase: compile + run + sign
+    if USE_LIBTCC:
+        # v4: full enclave execution
+        result = enclave_compile_run_and_sign(task)
+    else:
+        # v3 fallback: host compile + enclave sign
+        hr = host_compile_and_run(task)
+        result = enclave_hash_and_sign(task, hr)
 
     # Report to server — server determines verdict
     resp = requests.post(f"{BASE}/api/judge/report", json=result, headers=JUDGE_HEADERS)

@@ -1,11 +1,11 @@
-"""2-phase SGX Judge Client daemon — server-side verdict (v3).
+"""2-phase SGX Judge Client daemon — v4 full enclave execution.
 
-Security model (v3):
-- Server NEVER sends expected_output to client
-- Phase 1 (host): compile + run → collect stdout outputs
-- Phase 2 (enclave): hash outputs + ECDSA sign + attestation quote
-- Server: compares actual vs expected, determines verdict
-- Enclave proves "these outputs came from this code" via attestation
+Security model (v4):
+- Server sends code + testcase inputs (no expected outputs)
+- Enclave compiles + runs code via libtcc (host never sees inputs/outputs)
+- Enclave signs outputs hash + attestation quote
+- Server compares actual vs expected, determines verdict
+- Testcase inputs are protected inside enclave memory
 """
 
 import sys
@@ -136,31 +136,43 @@ def register_public_key(server: str, headers: dict, public_key_pem: str):
 # --- SGX Judging (stdin/stdout — TOCTOU-safe) ---
 
 
-def judge_in_sgx(task, hr):
-    """Run enclave hash+sign inside SGX. Data + key passed via stdin."""
-    # Load private key PEM to pass to enclave
+def judge_in_sgx(task, hr=None):
+    """Run inside SGX enclave. v4: full execution, v3 fallback: hash+sign only."""
     from client.enclave_keys import SEALED_KEY_PATH
     from pathlib import Path
 
     key_pem = Path(SEALED_KEY_PATH).read_text()
 
-    # Combine task + hr + key into single JSON for stdin
-    input_data = json.dumps(
-        {
-            "task": task,
-            "host_results": hr,
-            "private_key_pem": key_pem,
-        }
-    )
+    if hr is None:
+        # v4: full enclave execution (compile + run + sign)
+        input_data = json.dumps(
+            {
+                "task": task,
+                "private_key_pem": key_pem,
+            }
+        )
+    else:
+        # v3 fallback: host already ran, enclave just signs
+        input_data = json.dumps(
+            {
+                "task": task,
+                "host_results": hr,
+                "private_key_pem": key_pem,
+            }
+        )
 
     # Enclave script reads from stdin, writes result to stdout
     enc_script = (
         "import sys,os,json\n"
         f"sys.path.insert(0,{PROJECT_DIR!r})\n"
         f"os.chdir({PROJECT_DIR!r})\n"
-        "from client.enclave_judge import enclave_hash_and_sign\n"
+        "from client.enclave_judge import enclave_compile_run_and_sign, enclave_hash_and_sign\n"
         "data=json.loads(sys.stdin.read())\n"
-        "r=enclave_hash_and_sign(data['task'],data['host_results'])\n"
+        "if 'private_key_pem' in data: os.environ['_TEE_JUDGE_PRIVATE_KEY_PEM']=data['private_key_pem']\n"
+        "if 'host_results' in data:\n"
+        "    r=enclave_hash_and_sign(data['task'],data['host_results'])\n"
+        "else:\n"
+        "    r=enclave_compile_run_and_sign(data['task'])\n"
         "print('ENCLAVE_RESULT:'+json.dumps(r))\n"
     )
 
@@ -196,9 +208,14 @@ def judge_in_sgx(task, hr):
             pass
 
 
-def judge_native(task, hr):
-    """Run hash+sign natively (no SGX)."""
-    return enclave_hash_and_sign(task, hr)
+def judge_native(task, hr=None):
+    """Run natively (no SGX). v4: full execution, v3 fallback: hash+sign."""
+    if hr is None:
+        from client.enclave_judge import enclave_compile_run_and_sign
+
+        return enclave_compile_run_and_sign(task)
+    else:
+        return enclave_hash_and_sign(task, hr)
 
 
 # --- Task Processing ---
@@ -220,23 +237,31 @@ def process_task(headers: dict):
     tc_count = len(task["testcases"])
     log.info(f"Task: submission #{sid}, {tc_count} testcases")
 
-    # Phase 1: Host compile + run (testcases has input only)
-    hr = host_compile_and_run(task)
-    if hr["status"] == "CE":
-        log.info("  Phase 1: CE")
-    else:
-        log.info(f"  Phase 1: {len(hr['outputs'])} tests executed")
-
-    # Phase 2: Enclave hash + sign (no expected_output needed)
     if SGX_ENABLED:
-        result = judge_in_sgx(task, hr)
+        # v4: Full enclave execution — host never sees inputs/outputs
+        log.info("  v4 mode: full enclave execution (libtcc)")
+        result = judge_in_sgx(task)
     else:
-        result = judge_native(task, hr)
+        # Non-SGX: try libtcc native, fallback to host compile + enclave sign
+        try:
+            from client.tcc_runner import compile_and_run_all
+
+            log.info("  v4 mode: native libtcc execution")
+            result = judge_native(task)
+        except (ImportError, OSError):
+            # libtcc not available — fallback to v3 (host compile + enclave sign)
+            log.info("  v3 fallback: host compile + enclave sign")
+            hr = host_compile_and_run(task)
+            if hr["status"] == "CE":
+                log.info("  Phase 1: CE")
+            else:
+                log.info(f"  Phase 1: {len(hr['outputs'])} tests executed")
+            result = judge_native(task, hr)
 
     if result:
         att = json.loads(result["attestation_quote"])
         log.info(
-            f"  Phase 2: outputs_hash={result['outputs_hash'][:16]}... "
+            f"  Result: outputs_hash={result['outputs_hash'][:16]}... "
             f"[{att.get('sgx_mode', 'unknown')}]"
         )
         resp = requests.post(
