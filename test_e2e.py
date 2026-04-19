@@ -99,21 +99,29 @@ print(f"[0] Authenticated as testuser (user + judge tokens)")
 
 # Register enclave public key (judge token required, one-time)
 if USE_SGX_BRIDGE:
-    # SGX mode: use RA-TLS public key from long-running enclave
+    # SGX mode: use RA-TLS public key + certificate from long-running enclave
     _public_key_pem = sgx_bridge.public_key_pem
+    _ratls_cert = sgx_bridge.ratls_cert_der_b64
 else:
     # Non-SGX mode: use ECDSA key
     from client.enclave_keys import load_or_create_keypair
 
     _private_key, _public_key_pem = load_or_create_keypair()
+    _ratls_cert = None
+
+_reg_payload = {"public_key": _public_key_pem}
+if _ratls_cert:
+    _reg_payload["ratls_cert_der_b64"] = _ratls_cert
 
 res = requests.post(
     f"{BASE}/api/auth/register-enclave-key",
-    json={"public_key": _public_key_pem},
+    json=_reg_payload,
     headers=JUDGE_HEADERS,
 )
 assert res.status_code in (200, 409), f"Key registration failed: {res.text}"
-print(f"[0] Enclave public key registered ({'RA-TLS' if USE_SGX_BRIDGE else 'ECDSA'})")
+print(
+    f"[0] Enclave public key registered ({'RA-TLS+MAA' if _ratls_cert else 'ECDSA/dev'})"
+)
 
 
 def submit_and_judge(problem_id, code, expected_verdict):
