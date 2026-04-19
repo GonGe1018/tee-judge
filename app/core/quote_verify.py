@@ -123,6 +123,17 @@ def verify_verdict_signature(
 
 # --- Azure MAA Verification ---
 
+
+def _get_maa_endpoint() -> str:
+    """Get MAA endpoint from settings (lazy to avoid circular import)."""
+    try:
+        from app.core.config import settings
+
+        return settings.TEE_JUDGE_MAA_ENDPOINT
+    except Exception:
+        return os.environ.get("TEE_JUDGE_MAA_ENDPOINT", "")
+
+
 # Azure MAA endpoint (configurable via env)
 MAA_ENDPOINT = os.environ.get("TEE_JUDGE_MAA_ENDPOINT", "")
 
@@ -132,7 +143,8 @@ def verify_quote_with_maa(quote_bytes: bytes) -> tuple[bool, str, dict]:
 
     Returns (verified, reason, maa_claims).
     """
-    if not MAA_ENDPOINT:
+    maa_endpoint = _get_maa_endpoint()
+    if not maa_endpoint:
         return False, "MAA endpoint not configured (set TEE_JUDGE_MAA_ENDPOINT)", {}
 
     try:
@@ -140,7 +152,7 @@ def verify_quote_with_maa(quote_bytes: bytes) -> tuple[bool, str, dict]:
 
         quote_b64url = base64.urlsafe_b64encode(quote_bytes).rstrip(b"=").decode()
 
-        url = f"{MAA_ENDPOINT}/attest/SgxEnclave?api-version=2022-08-01"
+        url = f"{maa_endpoint}/attest/SgxEnclave?api-version=2022-08-01"
         r = requests.post(
             url,
             json={"quote": quote_b64url},
