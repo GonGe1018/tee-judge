@@ -269,12 +269,15 @@ def verify_ratls_certificate(
             return False, "Certificate public key does not match registered public key"
 
         # Extract SGX quote from certificate extension
-        # Gramine RA-TLS uses OID 1.2.840.113741.1337.6 for DCAP quote
-        GRAMINE_DCAP_OID = "1.2.840.113741.1337.6"
+        # Gramine RA-TLS DCAP OID (actual value observed in practice)
+        GRAMINE_DCAP_OIDS = [
+            "0.6.9.42.840.113741.1337.6",  # actual Gramine DCAP OID
+            "1.2.840.113741.1337.6",  # documented OID (may differ)
+        ]
         quote_bytes = None
 
         for ext in cert.extensions:
-            if ext.oid.dotted_string == GRAMINE_DCAP_OID:
+            if ext.oid.dotted_string in GRAMINE_DCAP_OIDS:
                 quote_bytes = ext.value.value
                 break
 
