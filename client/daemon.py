@@ -53,6 +53,7 @@ class EnclaveBridge:
     def __init__(self):
         self.proc = None
         self.public_key_pem = None
+        self.ratls_cert_der_b64 = None
         self._lock = threading.Lock()
         self._start()
 
@@ -87,6 +88,9 @@ class EnclaveBridge:
             ready = self._read_message()
             if ready.get("type") == "ready" and ready.get("public_key_pem"):
                 self.public_key_pem = ready["public_key_pem"]
+                self.ratls_cert_der_b64 = ready.get(
+                    "ratls_cert_der_b64"
+                )  # None in dev mode
                 log.info(
                     f"Enclave ready. RA-TLS public key obtained ({len(self.public_key_pem)} chars)"
                 )
@@ -241,12 +245,18 @@ def authenticate(server: str) -> str:
     return token
 
 
-def register_public_key(server: str, headers: dict, public_key_pem: str):
-    """Register enclave's public key with server (ECDSA or RA-TLS)."""
+def register_public_key(
+    server: str, headers: dict, public_key_pem: str, ratls_cert_der_b64: str = None
+):
+    """Register enclave's public key with server. In SGX mode, includes RA-TLS certificate for attestation."""
     try:
+        payload = {"public_key": public_key_pem}
+        if ratls_cert_der_b64:
+            payload["ratls_cert_der_b64"] = ratls_cert_der_b64
+
         r = requests.post(
             f"{server}/api/auth/register-enclave-key",
-            json={"public_key": public_key_pem},
+            json=payload,
             headers=headers,
             timeout=10,
         )
@@ -537,13 +547,14 @@ def main():
 
     # Register enclave public key
     if SGX_ENABLED:
-        # v4: start long-running enclave, get RA-TLS public key
+        # v4: start long-running enclave, get RA-TLS public key + certificate
         log.info("Starting long-running SGX enclave (RA-TLS mode)...")
         try:
             bridge = get_enclave_bridge()
             public_key_pem = bridge.public_key_pem
+            ratls_cert = bridge.ratls_cert_der_b64
             log.info("RA-TLS public key obtained from enclave")
-            register_public_key(SERVER, headers, public_key_pem)
+            register_public_key(SERVER, headers, public_key_pem, ratls_cert)
         except Exception as e:
             log.warning(f"Failed to start RA-TLS enclave: {e}, falling back to ECDSA")
             _, public_key_pem = load_or_create_keypair()

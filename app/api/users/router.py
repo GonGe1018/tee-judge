@@ -75,17 +75,61 @@ def get_judge_token(req: JudgeTokenRequest, user: dict = Depends(get_current_use
 def register_enclave_key(
     req: RegisterKeyRequest, user: dict = Depends(get_current_user)
 ):
-    """Register enclave's ECDSA public key. Judge role required. One-time only."""
+    """Register enclave's public key. In production, requires RA-TLS certificate for attestation."""
     if user.get("role") != "judge":
         raise HTTPException(403, "Judge role required to register enclave key")
 
+    # Validate PEM public key
     try:
         from cryptography.hazmat.primitives.serialization import load_pem_public_key
         from cryptography.hazmat.backends import default_backend
 
-        load_pem_public_key(req.public_key.encode(), backend=default_backend())
+        enclave_pub = load_pem_public_key(
+            req.public_key.encode(), backend=default_backend()
+        )
     except Exception:
         raise HTTPException(400, "Invalid PEM public key")
+
+    # RA-TLS certificate verification
+    from app.core.config import settings
+
+    if req.ratls_cert_der_b64:
+        # Verify RA-TLS certificate via Azure MAA
+        try:
+            import base64
+            from app.core.quote_verify import verify_ratls_certificate
+
+            cert_der = base64.b64decode(req.ratls_cert_der_b64)
+            ok, reason = verify_ratls_certificate(
+                cert_der, req.public_key, settings.TEE_JUDGE_MRENCLAVE
+            )
+            if not ok:
+                logger.warning(
+                    f"RA-TLS cert verification failed for user #{user['user_id']}: {reason}"
+                )
+                if not settings.is_dev:
+                    raise HTTPException(
+                        403, f"RA-TLS certificate verification failed: {reason}"
+                    )
+                logger.warning("Dev mode: accepting unverified RA-TLS certificate")
+            else:
+                logger.info(f"RA-TLS certificate verified for user #{user['user_id']}")
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.warning(f"RA-TLS verification error: {e}")
+            if not settings.is_dev:
+                raise HTTPException(403, "RA-TLS certificate verification failed")
+    else:
+        # No RA-TLS certificate — only allowed in dev mode
+        if not settings.is_dev:
+            raise HTTPException(
+                403,
+                "RA-TLS certificate required in production. Run Judge Client with SGX hardware.",
+            )
+        logger.warning(
+            f"No RA-TLS certificate for user #{user['user_id']} — dev mode only"
+        )
 
     with db_conn() as conn:
         existing_key = users_crud.get_enclave_public_key(conn, user["user_id"])

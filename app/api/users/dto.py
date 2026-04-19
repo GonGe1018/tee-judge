@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+from typing import Optional
 from pydantic import BaseModel
 
 
@@ -30,3 +33,6 @@ class JudgeTokenResponse(BaseModel):
 
 class RegisterKeyRequest(BaseModel):
     public_key: str
+    ratls_cert_der_b64: Optional[str] = (
+        None  # RA-TLS certificate (required in production)
+    )

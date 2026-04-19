@@ -234,3 +234,71 @@ def verify_quote_full(
         )
 
     return True, "OK"
+
+
+def verify_ratls_certificate(
+    cert_der: bytes, expected_public_key_pem: str, expected_mrenclave: str = ""
+) -> tuple[bool, str]:
+    """Verify RA-TLS certificate.
+
+    RA-TLS certificate is an X.509 certificate with an SGX quote embedded
+    as a custom extension (OID 1.2.840.113741.1337.6 for DCAP).
+
+    Steps:
+    1. Parse X.509 certificate
+    2. Verify certificate's public key matches expected_public_key_pem
+    3. Extract SGX quote from custom extension
+    4. Verify quote via Azure MAA
+    5. Optionally verify MRENCLAVE
+    """
+    try:
+        from cryptography.x509 import load_der_x509_certificate
+        from cryptography.hazmat.backends import default_backend
+        from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+        import base64
+
+        cert = load_der_x509_certificate(cert_der, backend=default_backend())
+
+        # Verify public key matches
+        cert_pub_pem = (
+            cert.public_key()
+            .public_bytes(Encoding.PEM, PublicFormat.SubjectPublicKeyInfo)
+            .decode()
+        )
+        if cert_pub_pem.strip() != expected_public_key_pem.strip():
+            return False, "Certificate public key does not match registered public key"
+
+        # Extract SGX quote from certificate extension
+        # Gramine RA-TLS uses OID 1.2.840.113741.1337.6 for DCAP quote
+        GRAMINE_DCAP_OID = "1.2.840.113741.1337.6"
+        quote_bytes = None
+
+        for ext in cert.extensions:
+            if ext.oid.dotted_string == GRAMINE_DCAP_OID:
+                quote_bytes = ext.value.value
+                break
+
+        if not quote_bytes:
+            return False, "No SGX quote extension found in RA-TLS certificate"
+
+        # Verify quote via MAA
+        ok, reason = verify_quote_with_maa(quote_bytes)
+        if not ok:
+            return False, f"MAA verification failed: {reason}"
+
+        # Verify MRENCLAVE if specified
+        if expected_mrenclave:
+            try:
+                parsed = parse_quote_binary(quote_bytes)
+                if parsed.mrenclave != expected_mrenclave:
+                    return (
+                        False,
+                        f"MRENCLAVE mismatch: {parsed.mrenclave} != {expected_mrenclave}",
+                    )
+            except Exception as e:
+                return False, f"Failed to parse quote for MRENCLAVE check: {e}"
+
+        return True, "OK"
+
+    except Exception as e:
+        return False, f"RA-TLS certificate verification error: {e}"

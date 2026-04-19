@@ -80,7 +80,11 @@ def _init_session_key():
     global _session_private_key, _session_public_key_pem
 
     try:
-        from client.ratls_keys import generate_ratls_keypair, get_ratls_public_key_pem
+        from client.ratls_keys import (
+            generate_ratls_keypair,
+            get_ratls_public_key_pem,
+            get_ratls_cert_der_b64,
+        )
         from cryptography.hazmat.primitives.serialization import load_der_private_key
         from cryptography.hazmat.backends import default_backend
 
@@ -89,16 +93,17 @@ def _init_session_key():
             der_key, password=None, backend=default_backend()
         )
         _session_public_key_pem = get_ratls_public_key_pem()
-        return True, _session_public_key_pem
+        ratls_cert_b64 = get_ratls_cert_der_b64()
+        return True, _session_public_key_pem, ratls_cert_b64
     except Exception as e:
         # Fallback to ECDSA key (non-SGX / dev mode)
         try:
             from client.enclave_keys import load_or_create_keypair
 
             _session_private_key, _session_public_key_pem = load_or_create_keypair()
-            return True, _session_public_key_pem
+            return True, _session_public_key_pem, None
         except Exception as e2:
-            return False, str(e2)
+            return False, str(e2), None
 
 
 # --- Task processing ---
@@ -240,13 +245,14 @@ def _get_attestation_quote(payload_hash: bytes, nonce: str) -> str:
 
 def main():
     # Initialize session key
-    ok, pub_key_or_err = _init_session_key()
+    ok, pub_key_or_err, ratls_cert_b64 = _init_session_key()
 
-    # Send ready message with public key
+    # Send ready message with public key + RA-TLS certificate
     write_message(
         {
             "type": "ready",
             "public_key_pem": pub_key_or_err if ok else None,
+            "ratls_cert_der_b64": ratls_cert_b64,  # None in non-SGX/dev mode
             "error": None if ok else pub_key_or_err,
         }
     )
