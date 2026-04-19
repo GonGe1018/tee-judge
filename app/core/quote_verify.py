@@ -285,7 +285,7 @@ def verify_ratls_certificate(
             return False, "No SGX quote extension found in RA-TLS certificate"
 
         # Verify quote via MAA
-        ok, reason = verify_quote_with_maa(quote_bytes)
+        ok, reason, _ = verify_quote_with_maa(quote_bytes)
         if not ok:
             return False, f"MAA verification failed: {reason}"
 
